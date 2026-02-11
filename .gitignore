@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+
+# Outputs
+viewer/roi_selection.json
+
+# Dataset / imagens médicas (NÃO subir)
+data/
+**/*.dcm
+
+# OS/IDE
+.DS_Store
+.vscode/
