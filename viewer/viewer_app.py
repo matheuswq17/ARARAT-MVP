@@ -31,6 +31,7 @@ class ViewerApp:
         
         # Dados do Case Atual
         self.series_list = []
+        self.t2_quick = {'axial': None, 'coronal': None, 'sagittal': None} # indices
         self.current_series_idx = 0
         self.series_page = 0
         self.series_per_page = 20
@@ -139,23 +140,40 @@ class ViewerApp:
             print(f"\n[ERRO] Nenhuma serie DICOM valida encontrada em {self.dicom_root}")
             sys.exit(1)
         
-        # Escolher serie default
-        # 1) T2 axial (hint)
-        for idx, s in enumerate(self.series_list):
-            if self.series_hint.lower() in s['series_name'].lower() and s['orientation'] == 'axial':
-                self.current_series_idx = idx
-                return
+        # Reset T2 quick
+        self.t2_quick = {'axial': None, 'coronal': None, 'sagittal': None}
         
-        # 2) Qualquer T2
-        for idx, s in enumerate(self.series_list):
-            if s['is_t2']:
-                self.current_series_idx = idx
-                return
+        print("\n[DEBUG] Analisando candidatos T2 QUICK:")
         
-        # 3) Serie com mais slices
+        # Detectar Tri-planar T2
+        # Critério: t2 + orientação + maior num_slices (se houver empate)
+        for orient in ['axial', 'coronal', 'sagittal']:
+            candidates = []
+            for idx, s in enumerate(self.series_list):
+                # Imprimir info de cada série candidata T2
+                if s['is_t2']:
+                    print(f"  - Serie: {s['series_name']} | Orient: {s['orientation']} | Slices: {s['num_slices']}")
+                
+                if s['is_t2'] and s['orientation'] == orient:
+                    candidates.append((idx, s))
+            
+            if candidates:
+                # Escolher a que tem mais slices (mais provável ser a principal)
+                best_idx = max(candidates, key=lambda x: x[1]['num_slices'])[0]
+                self.t2_quick[orient] = best_idx
+                print(f"  => [VITORIA] T2 {orient.upper()} detectada: {self.series_list[best_idx]['series_name']}")
+            else:
+                print(f"  => [AVISO] T2 {orient.upper()} nao encontrada")
+
+        # Escolher serie default (Axial T2)
+        if self.t2_quick['axial'] is not None:
+            self.current_series_idx = self.t2_quick['axial']
+            return
+            
+        # Fallback: Serie com mais slices
         self.current_series_idx = self.series_list.index(max(self.series_list, key=lambda x: x['num_slices']))
 
-    def load_current_series(self):
+    def load_current_series(self, center_mm=None):
         s = self.series_list[self.current_series_idx]
         print(f"\n[INFO] Carregando serie: {s['series_name']} ({s['orientation']})")
         try:
@@ -163,10 +181,17 @@ class ViewerApp:
                 s['series_dir'], s['series_uid']
             )
             self.max_slice = self.np_vol.shape[0] - 1
-            # Tentar preservar o slice atual se estiver no limite da nova serie
-            self.current_slice = min(self.current_slice, self.max_slice)
-            if self.current_slice < 0:
-                self.current_slice = self.max_slice // 2
+            
+            # Posicionamento do Slice
+            if center_mm:
+                # Se trocou de plano, ir para o slice do centro da ROI
+                _, _, k = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
+                self.current_slice = int(round(max(0, min(k, self.max_slice))))
+            else:
+                # Tentar preservar o slice atual se estiver no limite da nova serie
+                self.current_slice = min(self.current_slice, self.max_slice)
+                if self.current_slice < 0:
+                    self.current_slice = self.max_slice // 2
             
             # Resetar estado de ROI candidata ao trocar de serie
             self.candidate_center = None
@@ -293,9 +318,13 @@ class ViewerApp:
 
         self.fig.canvas.blit(self.ax.bbox)
 
-    def _draw_roi_sphere(self, center_ijk, radius_mm, color, label=None, linestyle='-', alpha=1.0):
-        """Desenha a interseção da esfera ROI com o slice atual."""
-        ci, cj, ck = center_ijk
+    def _draw_roi_sphere(self, center_ijk, radius_mm, color, label=None, linestyle='-', alpha=1.0, roi_mm=None):
+        """Desenha a interseção da esfera ROI com o slice atual, suportando multi-planos."""
+        # Se roi_mm for fornecido, usamos ele para converter para voxel da série atual
+        if roi_mm:
+            ci, cj, ck = dicom_io.mm_to_voxel(roi_mm[0], roi_mm[1], roi_mm[2], self.meta)
+        else:
+            ci, cj, ck = center_ijk
         
         # Calcular dz_mm (distancia entre o slice do centro e o slice atual)
         p_center = dicom_io.voxel_to_mm(ci, cj, ck, self.meta)
@@ -371,11 +400,23 @@ class ViewerApp:
         # Se estiver no modo SAMPLES, mostrar lista de casos
         if self.is_samples_mode:
             info_panel_text += "=== CASES ===\n"
-            # Mostrar os casos ao redor do atual (limitar para não estourar painel)
             for i, c in enumerate(self.cases_list):
                 mark = ">" if i == self.current_case_idx else " "
                 info_panel_text += f"{mark}[{i+1}] {c}\n"
             info_panel_text += "\n"
+
+        # T2 Quick Switch Block
+        info_panel_text += "=== T2 QUICK ===\n"
+        for orient in ['axial', 'coronal', 'sagittal']:
+            idx = self.t2_quick[orient]
+            if idx is not None:
+                mark = ">" if idx == self.current_series_idx else " "
+                key = orient[0].upper()
+                name = self.series_list[idx]['series_name'][:12]
+                info_panel_text += f"{mark}({key}) {orient.upper()}: {name}\n"
+            else:
+                info_panel_text += f"   {orient.upper()}: (not found)\n"
+        info_panel_text += "\n"
 
         info_panel_text += f"=== SERIES (Pg {self.series_page+1}/{total_series_pages}) ===\n"
         start_idx = self.series_page * self.series_per_page
@@ -401,17 +442,17 @@ class ViewerApp:
         self.ax_info.text(0.05, 0.95, info_panel_text, transform=self.ax_info.transAxes,
                          verticalalignment='top', family='monospace', fontsize=8)
 
-        # 6. Desenhar ROIs confirmadas (Renderização 3D)
+        # 6. Desenhar ROIs confirmadas (Renderização 3D Tri-planar)
         for roi in self.rois:
-            if roi.get('series_uid') == s['series_uid']:
-                self._draw_roi_sphere(
-                    roi['center_voxel'], 
-                    roi['radius_mm'], 
-                    color='lime', 
-                    label=roi['id'],
-                    linestyle='-',
-                    alpha=0.8
-                )
+            self._draw_roi_sphere(
+                roi['center_voxel'], 
+                roi['radius_mm'], 
+                color='lime', 
+                label=roi['id'],
+                linestyle='-',
+                alpha=0.8,
+                roi_mm=roi['center_mm']
+            )
 
         self.fig.canvas.draw_idle()
         # Preview será desenhado via blitting no on_draw ou manualmente aqui se background já existe
@@ -458,6 +499,36 @@ class ViewerApp:
             if event.key == 'q':
                 plt.close()
                 return
+
+            # Atalhos Rápidos T2 (A, C, S) - Funciona mesmo em modo normal
+            if self.mode == "NORMAL" and event.key in ['a', 'c', 's']:
+                # 'a' pode ser confundido com confirm_roi se estiver locked. 
+                # Se estiver locked, 'a' confirma. Se não, 'a' troca para Axial.
+                if event.key == 'a' and self.is_locked:
+                    self.confirm_roi()
+                    return
+                
+                target = None
+                if event.key == 'a': target = 'axial'
+                elif event.key == 'c': target = 'coronal'
+                elif event.key == 's': target = 'sagittal'
+                
+                if target and self.t2_quick[target] is not None:
+                    # Salvar centro da última ROI (ou centro do volume) para consistência
+                    last_center_mm = None
+                    if self.rois:
+                        last_center_mm = self.rois[-1]['center_mm']
+                    
+                    self.current_series_idx = self.t2_quick[target]
+                    self.load_current_series(center_mm=last_center_mm)
+                    self.last_message = f"Trocado para T2 {target.upper()}"
+                    self.series_page = self.current_series_idx // self.series_per_page
+                    self.update_plot()
+                    return
+                elif target:
+                    self.last_message = f"T2 {target.upper()} nao encontrada"
+                    self.update_plot()
+                    return
 
             # Modo de Seleção de Caso (Captura de Teclas)
             if self.mode == "CASE_SELECT":

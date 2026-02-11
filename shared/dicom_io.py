@@ -87,7 +87,7 @@ def list_case_series(root_dir):
                 if not dicom_names:
                     continue
                 
-                # Ler apenas metadados da primeira imagem para inferir orientacao
+                # Ler metadados para inferir orientacao
                 first_reader = sitk.ImageFileReader()
                 first_reader.SetFileName(dicom_names[0])
                 first_reader.ReadImageInformation()
@@ -113,7 +113,16 @@ def list_case_series(root_dir):
                     orientation = "sagittal"
                 
                 folder_name = os.path.basename(root)
+                
+                # FALLBACK: Se a orientação for ambígua ou para garantir consistência com o nome da pasta
+                if "t2tsetra" in folder_name.lower(): orientation = "axial"
+                elif "t2tsecor" in folder_name.lower(): orientation = "coronal"
+                elif "t2tsesag" in folder_name.lower(): orientation = "sagittal"
+                
                 is_t2 = "t2" in folder_name.lower() or "t2" in uid.lower()
+                
+                # Debug log
+                print(f"[DEBUG] Series: {folder_name} | Orientation: {orientation} | Dir: {direction[:6]} | Normal: {z_dir}")
                 
                 series_list.append({
                     "series_dir": root,
