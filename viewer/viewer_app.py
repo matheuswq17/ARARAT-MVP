@@ -60,7 +60,14 @@ class ViewerApp:
             sys.exit(1)
 
     def run(self):
-        self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        # Usar gridspec para criar um painel lateral
+        self.fig = plt.figure(figsize=(12, 8))
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[3, 1])
+        
+        self.ax = self.fig.add_subplot(gs[0])
+        self.ax_info = self.fig.add_subplot(gs[1])
+        self.ax_info.axis('off') # Esconder eixos do painel de info
+
         self.fig.canvas.manager.set_window_title(f"ARARAT Viewer - {os.path.basename(self.meta['series_dir'])}")
         
         self.update_plot()
@@ -70,15 +77,7 @@ class ViewerApp:
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         
-        print("\n--- CONTROLES ---")
-        print("Scroll / Setas UP/DOWN : Navegar slices")
-        print("Click esquerdo         : Selecionar centro da ROI")
-        print("'+' / '-'              : Ajustar raio (mm)")
-        print("'a'                    : Adicionar ROI")
-        print("'s'                    : Salvar JSON")
-        print("'q'                    : Sair")
-        print("-----------------\n")
-        
+        plt.tight_layout()
         plt.show()
 
     def update_plot(self):
@@ -87,14 +86,47 @@ class ViewerApp:
         slice_img = self.np_vol[self.current_slice, :, :]
         self.ax.imshow(slice_img, cmap='gray')
         
-        title = (f"Slice: {self.current_slice}/{self.max_slice}\n"
-                 f"Radius: {self.radius_mm:.1f} mm | ROIs: {len(self.rois)}")
-        self.ax.set_title(title)
+        self.ax.set_title(f"DICOM: {os.path.basename(self.meta['series_dir'])}")
         
+        # --- HUD / Info Panel ---
+        self.ax_info.clear()
+        self.ax_info.axis('off')
+        
+        info_text = (
+            "** CONTROLS **\n"
+            "Scroll/Arrows: Navigate\n"
+            "Left Click: Set Center\n"
+            "+ / - : Adjust Radius\n"
+            "a : Add ROI\n"
+            "s : Save JSON\n"
+            "q : Quit\n\n"
+            "** STATUS **\n"
+            f"Slice: {self.current_slice} / {self.max_slice}\n"
+            f"Radius: {self.radius_mm:.1f} mm\n"
+            f"ROIs Marked: {len(self.rois)}\n\n"
+        )
+        
+        if self.rois:
+            last = self.rois[-1]
+            info_text += (
+                "** LAST ROI (L{id}) **\n"
+                "Slice: {z}\n"
+                "Radius: {r:.1f} mm\n"
+                "Pos: {ijk}".format(
+                    id=last['lesion_id'],
+                    z=last['center_ijk'][2],
+                    r=last['radius_mm'],
+                    ijk=last['center_ijk'][:2]
+                )
+            )
+        
+        self.ax_info.text(0, 1, info_text, transform=self.ax_info.transAxes, 
+                         verticalalignment='top', family='monospace', fontsize=10)
+
         # desenhar selecao atual
         if self.current_selection:
             ci, cj = self.current_selection
-            self.ax.plot(ci, cj, 'r+', markersize=12, label='Current Selection')
+            self.ax.plot(ci, cj, 'r+', markersize=12)
             
             # raio em pixels (aproximado pelo spacing x)
             radius_px = self.radius_mm / self.meta['spacing'][0]
