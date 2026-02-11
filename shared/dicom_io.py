@@ -65,6 +65,92 @@ def resolve_series_dir(root_dir, series_hint="t2tsetra"):
             
     raise ValueError(f"Nenhuma serie DICOM valida encontrada em {root_dir}")
 
+def list_case_series(root_dir):
+    """
+    Varre recursivamente root_dir e retorna uma lista de series DICOM validas.
+    
+    Returns:
+        list: [ {series_dir, series_uid, series_name, num_slices, orientation, is_t2}, ... ]
+    """
+    reader = sitk.ImageSeriesReader()
+    series_list = []
+
+    for root, dirs, files in os.walk(root_dir):
+        # Evitar pastas vazias
+        if not files:
+            continue
+            
+        try:
+            uids = reader.GetGDCMSeriesIDs(root)
+            for uid in uids:
+                dicom_names = reader.GetGDCMSeriesFileNames(root, uid)
+                if not dicom_names:
+                    continue
+                
+                # Ler apenas metadados da primeira imagem para inferir orientacao
+                first_reader = sitk.ImageFileReader()
+                first_reader.SetFileName(dicom_names[0])
+                first_reader.ReadImageInformation()
+                
+                direction = first_reader.GetDirection()
+                # Heuristica de orientacao baseada na direction matrix (LPS)
+                # direction e (x1, x2, x3, y1, y2, y3, z1, z2, z3)
+                # Normal do plano e o cross product dos eixos X e Y da imagem
+                x_dir = np.array(direction[0:3])
+                y_dir = np.array(direction[3:6])
+                z_dir = np.cross(x_dir, y_dir)
+                
+                # Abs para simplificar comparacao com eixos principais
+                z_abs = np.abs(z_dir)
+                max_idx = np.argmax(z_abs)
+                
+                orientation = "unknown"
+                if max_idx == 2: # Z-axis predominante na normal -> Axial
+                    orientation = "axial"
+                elif max_idx == 1: # Y-axis predominante na normal -> Coronal
+                    orientation = "coronal"
+                elif max_idx == 0: # X-axis predominante na normal -> Sagittal
+                    orientation = "sagittal"
+                
+                folder_name = os.path.basename(root)
+                is_t2 = "t2" in folder_name.lower() or "t2" in uid.lower()
+                
+                series_list.append({
+                    "series_dir": root,
+                    "series_uid": uid,
+                    "series_name": folder_name,
+                    "num_slices": len(dicom_names),
+                    "orientation": orientation,
+                    "is_t2": is_t2
+                })
+        except:
+            continue
+            
+    return series_list
+
+def load_dicom_series_by_path(series_dir, series_id):
+    """
+    Carrega uma serie DICOM dado o diretorio e o ID.
+    """
+    reader = sitk.ImageSeriesReader()
+    dicom_names = reader.GetGDCMSeriesFileNames(series_dir, series_id)
+    reader.SetFileNames(dicom_names)
+    
+    sitk_img = reader.Execute()
+    np_vol = sitk.GetArrayFromImage(sitk_img)
+    
+    meta_dict = {
+        "origin": sitk_img.GetOrigin(),
+        "spacing": sitk_img.GetSpacing(),
+        "direction": sitk_img.GetDirection(),
+        "size": sitk_img.GetSize(),
+        "series_dir": series_dir,
+        "series_id": series_id,
+        "n_files": len(dicom_names)
+    }
+    
+    return sitk_img, np_vol, meta_dict
+
 def load_dicom_series(root_dir, series_hint="t2tsetra"):
     """
     Carrega uma serie DICOM resolvendo o diretorio automaticamente.
