@@ -33,6 +33,7 @@ class ViewerApp:
         
         self.rois = []
         self.lesion_counter = 1
+        self.last_message = "Pronto"
         
         self.fig = None
         self.ax = None
@@ -60,14 +61,8 @@ class ViewerApp:
             sys.exit(1)
 
     def run(self):
-        # Usar gridspec para criar um painel lateral
-        self.fig = plt.figure(figsize=(12, 8))
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[3, 1])
-        
-        self.ax = self.fig.add_subplot(gs[0])
-        self.ax_info = self.fig.add_subplot(gs[1])
-        self.ax_info.axis('off') # Esconder eixos do painel de info
-
+        # Janela única com HUD sobreposto
+        self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.fig.canvas.manager.set_window_title(f"ARARAT Viewer - {os.path.basename(self.meta['series_dir'])}")
         
         self.update_plot()
@@ -85,43 +80,22 @@ class ViewerApp:
         
         slice_img = self.np_vol[self.current_slice, :, :]
         self.ax.imshow(slice_img, cmap='gray')
+        self.ax.axis('off') # Esconder eixos para focar na imagem
         
-        self.ax.set_title(f"DICOM: {os.path.basename(self.meta['series_dir'])}")
-        
-        # --- HUD / Info Panel ---
-        self.ax_info.clear()
-        self.ax_info.axis('off')
-        
-        info_text = (
-            "** CONTROLS **\n"
-            "Scroll/Arrows: Navigate\n"
-            "Left Click: Set Center\n"
-            "+ / - : Adjust Radius\n"
-            "a : Add ROI\n"
-            "s : Save JSON\n"
-            "q : Quit\n\n"
-            "** STATUS **\n"
-            f"Slice: {self.current_slice} / {self.max_slice}\n"
-            f"Radius: {self.radius_mm:.1f} mm\n"
-            f"ROIs Marked: {len(self.rois)}\n\n"
+        # --- HUD / Overlay ---
+        hud_text = (
+            f"Slice: {self.current_slice}/{self.max_slice}\n"
+            f"Radius: {self.radius_mm:.1f} mm | ROIs: {len(self.rois)}\n"
+            "Scroll/Arrows: nav | Click: center | +/-: radius | a: add | s: save | q: quit"
         )
-        
-        if self.rois:
-            last = self.rois[-1]
-            info_text += (
-                "** LAST ROI (L{id}) **\n"
-                "Slice: {z}\n"
-                "Radius: {r:.1f} mm\n"
-                "Pos: {ijk}".format(
-                    id=last['lesion_id'],
-                    z=last['center_ijk'][2],
-                    r=last['radius_mm'],
-                    ijk=last['center_ijk'][:2]
-                )
-            )
-        
-        self.ax_info.text(0, 1, info_text, transform=self.ax_info.transAxes, 
-                         verticalalignment='top', family='monospace', fontsize=10)
+        if self.last_message:
+            hud_text += f"\nLast: {self.last_message}"
+
+        # Adicionar o HUD no topo com caixa semi-transparente
+        self.ax.text(0.02, 0.98, hud_text, transform=self.ax.transAxes, 
+                     verticalalignment='top', family='monospace', fontsize=10,
+                     color='white', fontweight='bold',
+                     bbox=dict(facecolor='black', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.5'))
 
         # desenhar selecao atual
         if self.current_selection:
@@ -144,13 +118,14 @@ class ViewerApp:
                 c = Circle((ri, rj), r_px, fill=False, color='lime', linestyle='--', alpha=0.6)
                 self.ax.add_patch(c)
 
-        self.fig.canvas.draw()
+        self.fig.canvas.draw_idle()
 
     def on_scroll(self, event):
         if event.button == 'up':
             self.current_slice = min(self.current_slice + 1, self.max_slice)
         elif event.button == 'down':
             self.current_slice = max(self.current_slice - 1, 0)
+        self.last_message = f"Slice alterado para {self.current_slice}"
         self.update_plot()
 
     def on_click(self, event):
@@ -160,7 +135,7 @@ class ViewerApp:
             return
             
         self.current_selection = (event.xdata, event.ydata)
-        print(f"Ponto marcado: i={event.xdata:.1f}, j={event.ydata:.1f} no slice {self.current_slice}")
+        self.last_message = f"Centro marcado: ({event.xdata:.1f}, {event.ydata:.1f})"
         self.update_plot()
 
     def on_key(self, event):
@@ -168,15 +143,19 @@ class ViewerApp:
             plt.close()
         elif event.key in ['up', 'right']:
             self.current_slice = min(self.current_slice + 1, self.max_slice)
+            self.last_message = f"Slice: {self.current_slice}"
             self.update_plot()
         elif event.key in ['down', 'left']:
             self.current_slice = max(self.current_slice - 1, 0)
+            self.last_message = f"Slice: {self.current_slice}"
             self.update_plot()
         elif event.key in ['+', '=']:
             self.radius_mm += 0.5
+            self.last_message = f"Raio: {self.radius_mm:.1f} mm"
             self.update_plot()
         elif event.key in ['-', '_']:
             self.radius_mm = max(0.5, self.radius_mm - 0.5)
+            self.last_message = f"Raio: {self.radius_mm:.1f} mm"
             self.update_plot()
         elif event.key == 'a':
             self.add_roi()
@@ -185,7 +164,8 @@ class ViewerApp:
 
     def add_roi(self):
         if not self.current_selection:
-            print("[AVISO] Selecione um ponto antes de adicionar.")
+            self.last_message = "AVISO: Selecione um ponto primeiro!"
+            self.update_plot()
             return
             
         i, j = self.current_selection
@@ -202,7 +182,7 @@ class ViewerApp:
         }
         
         self.rois.append(roi)
-        print(f"[OK] ROI L{self.lesion_counter} adicionada: {roi['center_ijk']} | {roi['radius_mm']}mm")
+        self.last_message = f"ROI L{self.lesion_counter} adicionada!"
         self.lesion_counter += 1
         self.current_selection = None
         self.update_plot()
@@ -220,9 +200,10 @@ class ViewerApp:
         try:
             with open(output_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            print(f"\n[SUCESSO] JSON salvo em: {os.path.abspath(output_path)}")
+            self.last_message = f"JSON salvo: {os.path.basename(output_path)}"
         except Exception as e:
-            print(f"[ERRO] Falha ao salvar JSON: {e}")
+            self.last_message = f"ERRO ao salvar JSON: {str(e)[:20]}..."
+        self.update_plot()
 
 def main():
     parser = argparse.ArgumentParser(description="ARARAT Viewer MVP - ProstateX")
