@@ -18,15 +18,57 @@ if project_root not in sys.path:
 
 try:
     from shared import dicom_io
-except ImportError as e:
-    print(f"Erro ao importar shared.dicom_io: {e}")
-    sys.exit(1)
+    from .exporters import roi_export
+    from .exporters import mask_export
+except (ImportError, ValueError) as e:
+    # Caso rodando como script direto, tenta import absoluto
+    try:
+        from shared import dicom_io
+        from viewer.exporters import roi_export
+        from viewer.exporters import mask_export
+    except ImportError as e2:
+        print(f"Erro fatal ao importar dependencias: {e2}")
+        sys.exit(1)
 
 class ViewerApp:
+    def _load_config(self):
+        """Carrega configurações persistentes (ex: data_root)."""
+        config_dir = os.path.expanduser("~/.ararat_viewer")
+        config_path = os.path.join(config_dir, "config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def _save_config(self):
+        """Salva configurações persistentes."""
+        config_dir = os.path.expanduser("~/.ararat_viewer")
+        os.makedirs(config_dir, exist_ok=True)
+        config_path = os.path.join(config_dir, "config.json")
+        try:
+            config = {"last_data_root": self.input_root}
+            with open(config_path, 'w') as f:
+                json.dump(config, f)
+        except:
+            pass
+
     def __init__(self, dicom_dir=None, data_root=None, series_hint="t2tsetra"):
+        # Carregar config se argumentos forem vazios
+        config = self._load_config()
+        if not data_root and not dicom_dir and "last_data_root" in config:
+            data_root = config["last_data_root"]
+            print(f"[INFO] Carregando ultimo data_root da config: {data_root}")
+
         self.input_root = os.path.abspath(data_root) if data_root else (os.path.abspath(dicom_dir) if dicom_dir else None)
         self.dicom_root = self.input_root
         self.series_hint = series_hint
+        
+        # Salvar se definimos um novo root
+        if self.input_root:
+            self._save_config()
         
         # Cache de Séries (LRU Simples)
         self._series_cache = {} # {(case_name, series_idx): (sitk_img, np_vol, meta)}
@@ -480,7 +522,9 @@ class ViewerApp:
             fmt_line("Del", "deletar ultima"),
             "",
             "GERAL",
-            fmt_line("Ctrl + S / J", "salvar JSON"),
+            fmt_line("E", "EXPORTAR (JSON+NIfTI)"),
+            fmt_line("V", "VALIDAR ROIs"),
+            fmt_line("Ctrl + S / J", "salvar JSON (simples)"),
             fmt_line("O", "abrir data_root"),
             fmt_line("H", "mostrar/ocultar help"),
             fmt_line("Q", "sair")
@@ -784,6 +828,10 @@ class ViewerApp:
                 self.delete_last_roi()
             elif event.key in ['j', 'ctrl+s']:
                 self.save_json()
+            elif event.key == 'e':
+                self.export_all_to_pipeline()
+            elif event.key == 'v':
+                self.validate_rois()
             elif event.key == 'h':
                 self.show_help = not self.show_help
                 self.update_plot()
@@ -945,6 +993,7 @@ class ViewerApp:
             if new_root:
                 self.input_root = os.path.abspath(new_root)
                 self.dicom_root = self.input_root
+                self._save_config() # Salvar novo data_root
                 self.discover_workspace()
                 if self.is_samples_mode:
                     self.load_case(0)
@@ -957,6 +1006,82 @@ class ViewerApp:
             print(f"[WARNING] Erro ao abrir seletor de pastas: {e}")
             self.last_message = "Erro ao abrir seletor de pastas."
             if self.fig: self.update_plot()
+
+    def export_all_to_pipeline(self):
+        """Exporta ROIs em JSON e máscaras NIfTI para o pipeline."""
+        if not self.rois:
+            self.last_message = "AVISO: Nenhuma ROI para exportar."
+            self.update_plot()
+            return
+
+        case_name = self.cases_list[self.current_case_idx]
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        export_case_dir = os.path.join(self.export_dir, case_name, timestamp)
+        os.makedirs(export_case_dir, exist_ok=True)
+
+        try:
+            # 1. Exportar JSON
+            json_path = os.path.join(export_case_dir, "rois.json")
+            roi_export.save_roi_json(json_path, case_name, self.rois, self.input_root)
+            
+            # 2. Exportar Máscaras NIfTI
+            mask_export.export_roi_masks(export_case_dir, self.sitk_img, self.rois, case_name)
+            
+            self.last_message = f"Export OK: {case_name}/{timestamp}"
+            print(f"\n[INFO] Export Pipeline completo em: {export_case_dir}")
+        except Exception as e:
+            self.last_message = f"ERRO no export: {str(e)[:20]}..."
+            print(f"[ERROR] Falha no export pipeline: {e}")
+            traceback.print_exc()
+        
+        self.update_plot()
+
+    def validate_rois(self):
+        """Valida se as ROIs intersectam o volume atual."""
+        if not self.rois:
+            self.last_message = "AVISO: Nenhuma ROI para validar."
+            self.update_plot()
+            return
+
+        print("\n=== VALIDAÇÃO DE ROIS ===")
+        all_valid = True
+        for roi in self.rois:
+            center_mm = roi['center_mm']
+            radius_mm = roi['radius_mm']
+            roi_id = roi['id']
+            
+            # Converter centro para voxel na imagem atual
+            try:
+                # Usar SimpleITK para transformar ponto físico em índice
+                # Se estiver fora do bounding box físico, lança exceção ou retorna valores fora
+                continuous_idx = self.sitk_img.TransformPhysicalPointToContinuousIndex(center_mm)
+                size = self.sitk_img.GetSize() # (x, y, z)
+                
+                # Checar se o centro está dentro ou perto o suficiente para a esfera intersectar
+                is_outside = False
+                for i in range(3):
+                    # Se o centro estiver mais longe que o raio das bordas do volume
+                    # Simplificação: checar se o centro está nos limites [0, size]
+                    if continuous_idx[i] < -0.5 or continuous_idx[i] > size[i] - 0.5:
+                        is_outside = True
+                        break
+                
+                if is_outside:
+                    msg = f"WARN: ROI {roi_id} fora do volume!"
+                    print(f"[WARNING] {msg} (Centro: {center_mm}, Volume Size: {size})")
+                    self.last_message = msg
+                    all_valid = False
+            except Exception as e:
+                msg = f"WARN: Erro ao validar {roi_id}"
+                print(f"[ERROR] {msg}: {e}")
+                self.last_message = msg
+                all_valid = False
+
+        if all_valid:
+            self.last_message = "Todas as ROIs validas no volume atual."
+            print("[INFO] Todas as ROIs estao dentro dos limites do volume.")
+        
+        self.update_plot()
 
     def save_json(self):
         """Exporta JSON completo e padronizado em exports/ com metadados geométricos."""
