@@ -23,11 +23,16 @@ except ImportError as e:
     sys.exit(1)
 
 class ViewerApp:
-    def __init__(self, dicom_dir, series_hint="t2tsetra"):
-        self.input_root = os.path.abspath(dicom_dir)
+    def __init__(self, dicom_dir=None, data_root=None, series_hint="t2tsetra"):
+        self.input_root = os.path.abspath(data_root) if data_root else (os.path.abspath(dicom_dir) if dicom_dir else None)
         self.dicom_root = self.input_root
         self.series_hint = series_hint
         
+        # Cache de Séries (LRU Simples)
+        self._series_cache = {} # {(case_name, series_idx): (sitk_img, np_vol, meta)}
+        self._cache_order = []
+        self._max_cache_size = 6
+
         # Dados do Workspace (Cases)
         self.cases_list = []
         self.current_case_idx = -1
@@ -111,21 +116,42 @@ class ViewerApp:
             self.load_current_series()
 
     def discover_workspace(self):
-        """Detecta se dicom_dir é uma raiz de casos ou um caso específico."""
+        """Detecta se input_root é uma raiz de casos ou um caso específico."""
+        if not self.input_root or not os.path.exists(self.input_root):
+            print(f"[WARNING] Caminho invalido: {self.input_root}")
+            self.cases_list = []
+            return
+
         print(f"Analisando workspace: {self.input_root}")
-        subdirs = [d for d in os.listdir(self.input_root) if os.path.isdir(os.path.join(self.input_root, d))]
         
-        # Heurística: se tem subpastas "caseX", é modo SAMPLES
-        cases = sorted([d for d in subdirs if d.lower().startswith("case")])
-        if cases:
-            print(f"[INFO] Modo SAMPLES detectado. {len(cases)} casos encontrados.")
-            self.is_samples_mode = True
-            self.cases_list = cases
-        else:
+        # Verificar se é um caso único (tem DICOMs ou subpastas de série)
+        series_in_root = dicom_io.list_case_series(self.input_root)
+        
+        if series_in_root:
             print("[INFO] Modo SINGLE CASE detectado.")
             self.is_samples_mode = False
             self.cases_list = [os.path.basename(self.input_root)]
             self.current_case_idx = 0
+        else:
+            # Tentar encontrar casos (pastas que contenham séries)
+            subdirs = sorted([d for d in os.listdir(self.input_root) 
+                             if os.path.isdir(os.path.join(self.input_root, d))])
+            
+            valid_cases = []
+            for d in subdirs:
+                case_path = os.path.join(self.input_root, d)
+                if dicom_io.list_case_series(case_path):
+                    valid_cases.append(d)
+            
+            if valid_cases:
+                print(f"[INFO] Modo SAMPLES detectado. {len(valid_cases)} casos validos encontrados.")
+                self.is_samples_mode = True
+                self.cases_list = valid_cases
+                self.current_case_idx = 0
+            else:
+                print(f"[WARNING] Nenhun caso valido encontrado em {self.input_root}")
+                self.cases_list = []
+                self.is_samples_mode = False
 
     def load_case(self, case_idx):
         """Troca o caso ativo (hot-swap)."""
@@ -205,33 +231,61 @@ class ViewerApp:
         self.current_series_idx = self.series_list.index(max(self.series_list, key=lambda x: x['num_slices']))
 
     def load_current_series(self, center_mm=None):
-        s = self.series_list[self.current_series_idx]
-        print(f"\n[INFO] Carregando serie: {s['series_name']} ({s['orientation']})")
-        try:
-            self.sitk_img, self.np_vol, self.meta = dicom_io.load_dicom_series_by_path(
-                s['series_dir'], s['series_uid']
-            )
-            self.max_slice = self.np_vol.shape[0] - 1
+        case_name = self.cases_list[self.current_case_idx]
+        s_idx = self.current_series_idx
+        cache_key = (case_name, s_idx)
+
+        # 1. Tentar Cache
+        if cache_key in self._series_cache:
+            print(f"[DEBUG] Cache HIT: {cache_key}")
+            self.sitk_img, self.np_vol, self.meta = self._series_cache[cache_key]
+            # Atualizar ordem do LRU
+            self._cache_order.remove(cache_key)
+            self._cache_order.append(cache_key)
+            self.last_message = f"Pronto (cache)"
+        else:
+            s = self.series_list[s_idx]
+            self.last_message = f"Carregando {s['series_name']}..."
+            if self.fig: self.update_plot()
             
-            # Posicionamento do Slice
-            if center_mm:
-                # Se trocou de plano, ir para o slice do centro da ROI
-                _, _, k = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
-                self.current_slice = int(round(max(0, min(k, self.max_slice))))
-            else:
-                # Tentar preservar o slice atual se estiver no limite da nova serie
-                self.current_slice = min(self.current_slice, self.max_slice)
-                if self.current_slice < 0:
-                    self.current_slice = self.max_slice // 2
-            
-            # Resetar estado de ROI candidata ao trocar de serie
-            self.candidate_center = None
-            self.is_locked = False
-            
-        except Exception as e:
-            print(f"\n[ERRO] Falha ao carregar serie {s['series_name']}: {e}")
-            traceback.print_exc()
-            sys.exit(1)
+            print(f"\n[INFO] Carregando serie: {s['series_name']} ({s['orientation']})")
+            try:
+                self.sitk_img, self.np_vol, self.meta = dicom_io.load_dicom_series_by_path(
+                    s['series_dir'], s['series_uid']
+                )
+                
+                # Adicionar ao Cache
+                self._series_cache[cache_key] = (self.sitk_img, self.np_vol, self.meta)
+                self._cache_order.append(cache_key)
+                if len(self._cache_order) > self._max_cache_size:
+                    oldest = self._cache_order.pop(0)
+                    if oldest in self._series_cache:
+                        del self._series_cache[oldest]
+                        print(f"[DEBUG] Cache Evict: {oldest}")
+                self.last_message = "Pronto"
+                    
+            except Exception as e:
+                self.last_message = f"ERRO ao carregar serie (ver terminal)"
+                print(f"\n[ERRO] Falha ao carregar serie {s['series_name']}: {e}")
+                traceback.print_exc()
+                if self.fig: self.update_plot()
+                return
+
+        self.max_slice = self.np_vol.shape[0] - 1
+        
+        # Posicionamento do Slice
+        if center_mm:
+            _, _, k = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
+            self.current_slice = int(round(max(0, min(k, self.max_slice))))
+        else:
+            self.current_slice = min(self.current_slice, self.max_slice)
+            if self.current_slice < 0:
+                self.current_slice = self.max_slice // 2
+        
+        self.candidate_center = None
+        self.is_locked = False
+        self.last_message = "Pronto"
+        if self.fig: self.update_plot()
 
     def run(self):
         # Desativar hotkeys padrão do matplotlib que podem causar conflitos
@@ -414,19 +468,20 @@ class ViewerApp:
             fmt_line("Scroll/Arrows", "trocar slice"),
             fmt_line("[ / ]", "paginar series"),
             fmt_line("1..9", "atalho serie"),
-            fmt_line("G + num + Enter", "ir para serie N"),
+            fmt_line("Ctrl + G", "ir para serie N"),
             fmt_line("C + num + Enter", "ir para case N"),
-            fmt_line("A / C / S", "T2 Axial/Cor/Sag"),
+            fmt_line("A / K / G", "T2 Axial/Cor/Sag"),
             "",
             "ROI (LESAO)",
             fmt_line("Clique esq.", "travar centro"),
-            fmt_line("Enter / A", "confirmar ROI"),
+            fmt_line("Enter / D", "confirmar ROI"),
             fmt_line("X", "limpar selecao"),
             fmt_line("+ / -", "ajustar raio"),
-            fmt_line("D", "deletar ultima"),
+            fmt_line("Del", "deletar ultima"),
             "",
             "GERAL",
-            fmt_line("S", "salvar JSON"),
+            fmt_line("Ctrl + S / J", "salvar JSON"),
+            fmt_line("O", "abrir data_root"),
             fmt_line("H", "mostrar/ocultar help"),
             fmt_line("Q", "sair")
         ]
@@ -510,7 +565,9 @@ class ViewerApp:
         for orient in ['axial', 'coronal', 'sagittal']:
             idx = self.t2_quick[orient]
             mark = ">" if idx == self.current_series_idx and idx is not None else " "
-            key = orient[0].upper()
+            # Mapeamento de teclas: A para axial, K para coronal, G para sagittal
+            key_map = {'axial': 'A', 'coronal': 'K', 'sagittal': 'G'}
+            key = key_map[orient]
             if idx is not None:
                 name = self.series_list[idx]['series_name'][:12]
                 info_panel_text += f"{mark}({key}) {orient[:3].upper()}: {name}\n"
@@ -604,35 +661,39 @@ class ViewerApp:
                 plt.close()
                 return
 
-            # Atalhos Rápidos T2 (A, C, S) - Funciona mesmo em modo normal
-            if self.mode == "NORMAL" and event.key in ['a', 'c', 's']:
-                # 'a' pode ser confundido com confirm_roi se estiver locked. 
-                # Se estiver locked, 'a' confirma. Se não, 'a' troca para Axial.
-                if event.key == 'a' and self.is_locked:
-                    self.confirm_roi()
-                    return
-                
+            # Detectar Ctrl
+            is_ctrl = event.key.startswith('ctrl+')
+
+            # Atalhos de Navegação T2 Quick (A, K, G)
+            if self.mode == "NORMAL" and not is_ctrl and event.key in ['a', 'k', 'g']:
                 target = None
                 if event.key == 'a': target = 'axial'
-                elif event.key == 'c': target = 'coronal'
-                elif event.key == 's': target = 'sagittal'
+                elif event.key == 'k': target = 'coronal' # K de Coronal (C conflita com Case)
+                elif event.key == 'g': target = 'sagittal' # G de SaGittal (S conflita com Save)
                 
-                if target and self.t2_quick[target] is not None:
-                    # Salvar centro da última ROI (ou centro do volume) para consistência
-                    last_center_mm = None
-                    if self.rois:
-                        last_center_mm = self.rois[-1]['center_mm']
-                    
-                    self.current_series_idx = self.t2_quick[target]
-                    self.load_current_series(center_mm=last_center_mm)
-                    self.last_message = f"Trocado para T2 {target.upper()}"
-                    self.series_page = self.current_series_idx // self.series_per_page
+                if target:
+                    if self.t2_quick[target] is not None:
+                        last_center_mm = self.rois[-1]['center_mm'] if self.rois else None
+                        self.current_series_idx = self.t2_quick[target]
+                        self.load_current_series(center_mm=last_center_mm)
+                        self.series_page = self.current_series_idx // self.series_per_page
+                        self.last_message = f"Trocado para T2 {target.upper()}"
+                    else:
+                        self.last_message = f"T2 {target.upper()} nao disponivel neste case."
                     self.update_plot()
                     return
-                elif target:
-                    self.last_message = f"T2 {target.upper()} nao encontrada"
-                    self.update_plot()
-                    return
+
+            # Modo Go-to Series (Ctrl+G)
+            if self.mode == "NORMAL" and event.key == 'ctrl+g':
+                self.mode = "SERIES_SELECT"
+                self.series_input_str = ""
+                self.update_plot()
+                return
+
+            # Modo Abrir Pasta (O)
+            if self.mode == "NORMAL" and event.key == 'o':
+                self.open_data_root()
+                return
 
             # Modo de Seleção de Caso (Captura de Teclas)
             if self.mode == "CASE_SELECT":
@@ -696,15 +757,9 @@ class ViewerApp:
                 return
 
             # Controles Normais (Modo NORMAL)
-            if event.key == 'c':
-                print("[DEBUG] Enter CASE_SELECT")
+            elif event.key == 'c':
                 self.mode = "CASE_SELECT"
                 self.case_input_str = ""
-                self.update_plot()
-            elif event.key == 'g':
-                print("[DEBUG] Enter SERIES_SELECT")
-                self.mode = "SERIES_SELECT"
-                self.series_input_str = ""
                 self.update_plot()
             elif event.key in ['up', 'right']:
                 self.current_slice = min(self.current_slice + 1, self.max_slice)
@@ -723,11 +778,11 @@ class ViewerApp:
                 self.candidate_center = None
                 self.last_message = "Selecao limpa."
                 self.update_plot()
-            elif event.key in ['enter', 'a']:
+            elif event.key == 'enter':
                 self.confirm_roi()
-            elif event.key == 'd':
+            elif event.key == 'delete':
                 self.delete_last_roi()
-            elif event.key == 's':
+            elif event.key in ['j', 'ctrl+s']:
                 self.save_json()
             elif event.key == 'h':
                 self.show_help = not self.show_help
@@ -877,44 +932,106 @@ class ViewerApp:
         except Exception as e:
             print(f"[ERROR] Falha ao atualizar manifest.csv: {e}")
 
-    def save_json(self):
-        case_name = self.cases_list[self.current_case_idx]
-        if self.is_samples_mode:
-            filename = f"roi_selection_{case_name}.json"
-        else:
-            filename = "roi_selection.json"
+    def open_data_root(self):
+        """Abre seletor de pastas para mudar o data_root."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            new_root = filedialog.askdirectory(title="Selecione a pasta raiz de casos (data_root)")
+            root.destroy()
             
-        output_path = os.path.join(os.path.dirname(__file__), filename)
-        s = self.series_list[self.current_series_idx]
+            if new_root:
+                self.input_root = os.path.abspath(new_root)
+                self.dicom_root = self.input_root
+                self.discover_workspace()
+                if self.is_samples_mode:
+                    self.load_case(0)
+                else:
+                    self.discover_series()
+                    self.load_current_series()
+                self.last_message = f"Nova raiz: {os.path.basename(self.input_root)}"
+                if self.fig: self.update_plot()
+        except Exception as e:
+            print(f"[WARNING] Erro ao abrir seletor de pastas: {e}")
+            self.last_message = "Erro ao abrir seletor de pastas."
+            if self.fig: self.update_plot()
+
+    def save_json(self):
+        """Exporta JSON completo e padronizado em exports/ com metadados geométricos."""
+        case_name = self.cases_list[self.current_case_idx]
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"roi_selection_{case_name}_{timestamp}.json"
         
+        # Garantir diretório de export
+        os.makedirs(self.export_dir, exist_ok=True)
+        output_path = os.path.join(self.export_dir, filename)
+        
+        # Montar estrutura completa solicitada
+        rois_data = []
+        for roi in self.rois:
+            # Encontrar série da ROI se possível (no momento o viewer assume a série atual para as ROIs mostradas)
+            # Mas vamos pegar os dados salvos no objeto ROI
+            s_uid = roi.get('series_uid')
+            
+            # Encontrar metadados da série (se não for a atual, teríamos que carregar, mas para o MVP
+            # vamos assumir que as ROIs confirmadas têm os dados geométricos já calculados)
+            
+            roi_entry = {
+                "id": roi['id'],
+                "case_id": case_name,
+                "series_uid": s_uid,
+                "orientation": "UNKNOWN", # Fallback
+                "slice_index_k": roi['center_voxel'][2],
+                "center_ijk": roi['center_voxel'],
+                "center_xyz_mm": roi['center_mm'],
+                "radius_mm": roi['radius_mm'],
+                "timestamp_iso": datetime.now().isoformat(),
+                "image_geometry": {
+                    "spacing_xyz": list(self.meta['spacing']),
+                    "origin_xyz": list(self.meta['origin']),
+                    "direction": list(self.meta['direction']),
+                    "shape_ijk": list(self.meta['size'])
+                }
+            }
+            
+            # Tentar achar a orientação na lista de séries
+            for s in self.series_list:
+                if s['series_uid'] == s_uid:
+                    roi_entry["orientation"] = s['orientation'].upper()
+                    roi_entry["series_name"] = s['series_name']
+                    break
+            
+            rois_data.append(roi_entry)
+
         data = {
-            "case_root": self.dicom_root,
+            "app_version": "1.0.0-MVP",
+            "data_root": self.input_root,
             "case_name": case_name,
-            "current_series": {
-                "uid": s['series_uid'],
-                "dir": s['series_dir'],
-                "name": s['series_name'],
-                "orientation": s['orientation']
-            },
-            "rois": self.rois
+            "rois": rois_data
         }
         
         try:
             with open(output_path, 'w') as f:
-                json.dump(data, f, indent=2)
-            self.last_message = f"JSON salvo: {filename}"
+                json.dump(data, f, indent=2, sort_keys=True)
+            self.last_message = f"JSON exportado: {filename}"
+            print(f"[INFO] Export completo salvo em: {output_path}")
         except Exception as e:
             self.last_message = f"ERRO ao salvar JSON: {str(e)[:20]}..."
-        self.update_plot()
+            print(f"[ERROR] Falha no export JSON: {e}")
+        
+        if self.fig: self.update_plot()
 
 def main():
     parser = argparse.ArgumentParser(description="ARARAT Viewer MVP - ProstateX")
-    parser.add_argument("--dicom_dir", required=True, help="Diretorio raiz do caso ou serie")
+    parser.add_argument("--dicom_dir", help="Diretorio de um caso especifico (Single-case mode)")
+    parser.add_argument("--data_root", "--samples_root", help="Diretorio raiz contendo varios casos (Samples mode)")
     parser.add_argument("--series_hint", default="t2tsetra", help="Hint para encontrar a serie (default: t2tsetra)")
     
     args = parser.parse_args()
     
-    app = ViewerApp(args.dicom_dir, args.series_hint)
+    app = ViewerApp(dicom_dir=args.dicom_dir, data_root=args.data_root, series_hint=args.series_hint)
     app.run()
 
 if __name__ == "__main__":
