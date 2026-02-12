@@ -2,9 +2,13 @@ import sys
 import os
 import argparse
 import json
+import csv
 import traceback
+from datetime import datetime
+from PIL import Image
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Ellipse
+import matplotlib.image as mpimg
+from matplotlib.patches import Circle, Ellipse, Rectangle
 
 # adicionar raiz do projeto ao path para importar shared
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -67,9 +71,36 @@ class ViewerApp:
         self.rois = [] # ROIs confirmadas
         self.lesion_counter = 1
         self.last_message = "Pronto"
+        self.show_help = False
         
         self.fig = None
         self.ax = None
+        self.ax_left = None
+        self.ax_info = None
+        
+        # Logo Branding & Icon
+        self.logo_img = None
+        assets_dir = os.path.join(current_dir, "assets")
+        logo_path = os.path.join(assets_dir, "ararat_logo.png")
+        self.ico_path = os.path.join(assets_dir, "ararat_logo.ico")
+        
+        if os.path.exists(logo_path):
+            try:
+                self.logo_img = mpimg.imread(logo_path)
+                # Gerar .ico se não existir
+                if not os.path.exists(self.ico_path):
+                    img = Image.open(logo_path)
+                    img.save(self.ico_path, format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
+                    print(f"[INFO] Icone gerado em {self.ico_path}")
+            except Exception as e:
+                print(f"[WARNING] Erro ao processar logo/icone: {e}")
+        else:
+            print(f"[WARNING] Logo nao encontrada em {logo_path}")
+
+        # Garantir pastas de export
+        self.export_dir = os.path.join(project_root, "exports")
+        self.roi_img_dir = os.path.join(self.export_dir, "roi_images")
+        os.makedirs(self.roi_img_dir, exist_ok=True)
         
         # Inicialização
         self.discover_workspace()
@@ -213,19 +244,38 @@ class ViewerApp:
         plt.rcParams['keymap.zoom'] = ''
         plt.rcParams['keymap.quit'] = ''
 
-        # Usar gridspec para criar um painel lateral
-        self.fig = plt.figure(figsize=(14, 10))
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[4, 1.2])
+        # Usar gridspec para criar um layout com 3 colunas: Sidebar Left, Main Image, Info Right
+        self.fig = plt.figure(figsize=(16, 10))
+        gs = self.fig.add_gridspec(1, 3, width_ratios=[1.2, 4, 1.2])
         
-        self.ax = self.fig.add_subplot(gs[0])
-        self.ax_info = self.fig.add_subplot(gs[1])
+        self.ax_left = self.fig.add_subplot(gs[0])
+        self.ax = self.fig.add_subplot(gs[1])
+        self.ax_info = self.fig.add_subplot(gs[2])
+        
+        self.ax_left.axis('off')
         self.ax_info.axis('off') 
 
         # Desativar toolbar para evitar pan/zoom acidental
         self.fig.canvas.toolbar.pack_forget()
 
-        self.fig.canvas.manager.set_window_title(f"ARARAT Viewer - {os.path.basename(self.dicom_root)}")
+        self.fig.canvas.manager.set_window_title("ARARAT Viewer")
         
+        # Definir icone da janela (se o ico existir)
+        if os.path.exists(self.ico_path):
+            try:
+                # No Windows, tentamos usar o método do manager para definir o ícone
+                manager = self.fig.canvas.manager
+                if hasattr(manager, 'window'):
+                    # Dependendo do backend (TkAgg é o padrão no Windows)
+                    try:
+                        manager.window.iconbitmap(self.ico_path)
+                    except:
+                        manager.set_window_icon(self.ico_path)
+                else:
+                    manager.set_window_icon(self.ico_path)
+            except Exception as e:
+                print(f"[WARNING] Nao foi possivel definir o icone da janela: {e}")
+
         self.update_plot()
         
         # conectar eventos
@@ -235,7 +285,9 @@ class ViewerApp:
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.fig.canvas.mpl_connect('draw_event', self.on_draw)
         
-        plt.tight_layout()
+        # Ajustar margens para o novo layout com sidebar
+        plt.subplots_adjust(top=0.92, bottom=0.05, left=0.02, right=0.98, wspace=0.1)
+        
         plt.show()
 
     def on_draw(self, event):
@@ -350,11 +402,43 @@ class ViewerApp:
             if label:
                 self.ax.text(ci+2, cj+2, label, color=color, fontweight='bold', fontsize=8)
 
+    def _get_help_text(self):
+        """Gera o texto do help com alinhamento perfeito."""
+        def fmt_line(cmd, desc, col=18):
+            return f"{cmd.ljust(col)} : {desc}"
+
+        lines = [
+            "=== COMANDOS DO SISTEMA ===",
+            "",
+            "NAVEGACAO",
+            fmt_line("Scroll/Arrows", "trocar slice"),
+            fmt_line("[ / ]", "paginar series"),
+            fmt_line("1..9", "atalho serie"),
+            fmt_line("G + num + Enter", "ir para serie N"),
+            fmt_line("C + num + Enter", "ir para case N"),
+            fmt_line("A / C / S", "T2 Axial/Cor/Sag"),
+            "",
+            "ROI (LESAO)",
+            fmt_line("Clique esq.", "travar centro"),
+            fmt_line("Enter / A", "confirmar ROI"),
+            fmt_line("X", "limpar selecao"),
+            fmt_line("+ / -", "ajustar raio"),
+            fmt_line("D", "deletar ultima"),
+            "",
+            "GERAL",
+            fmt_line("S", "salvar JSON"),
+            fmt_line("H", "mostrar/ocultar help"),
+            fmt_line("Q", "sair")
+        ]
+        return "\n".join(lines)
+
     def update_plot(self):
         # 1. Limpar eixos
         self.ax.clear()
         self.ax_info.clear()
+        self.ax_left.clear()
         self.ax_info.axis('off')
+        self.ax_left.axis('off')
         
         # Resetar artists persistentes pois o ax.clear() os removeu
         self._persistent_artists = {'line': None, 'ellipse': None, 'text': None}
@@ -367,58 +451,75 @@ class ViewerApp:
         self.ax.set_ylim(height, 0)
         self.ax.axis('off') 
         
-        # 3. HUD (Top-Left)
+        # 3. HUD (Acima da Imagem)
         s = self.series_list[self.current_series_idx]
         case_name = self.cases_list[self.current_case_idx]
         
         if self.mode == "SERIES_SELECT":
-            mode_str = f"GO TO SERIES: {self.series_input_str}_ (Enter to confirm, Esc to cancel)"
+            mode_str = f"GO TO SERIES: {self.series_input_str}_ (Enter confirm, Esc cancel)"
         elif self.mode == "CASE_SELECT":
-            mode_str = f"GO TO CASE: {self.case_input_str}_ (Enter to confirm, Esc to cancel)"
+            mode_str = f"GO TO CASE: {self.case_input_str}_ (Enter confirm, Esc cancel)"
         else:
-            mode_str = "LOCKED (Enter/a to confirm)" if self.is_locked else "PREVIEW (Click to lock)"
+            mode_str = "LOCKED" if self.is_locked else "PREVIEW"
             
-        hud_text = (
-            f"CASE: {case_name} | SERIE: {s['series_name']} [{s['orientation'].upper()}]\n"
-            f"SLICE: {self.current_slice}/{self.max_slice} | R: {self.radius_mm:.1f} mm\n"
-            f"MODE: {mode_str}\n"
-            "nav: scroll/arrows | c: go-to case | g: go-to series | confirm: Enter/a | clear: x | radius: +/- | save: s | quit: q"
-        )
+        line1 = f"CASE: {case_name} | SERIES: {s['series_name'][:20]} ({s['orientation'].upper()})"
+        line2 = f"SLICE: {self.current_slice}/{self.max_slice} | R: {self.radius_mm:.1f} mm | MODE: {mode_str}"
+        
+        hud_text = f"{line1}\n{line2}"
         if self.last_message:
             hud_text += f"\nLAST: {self.last_message}"
 
-        self.ax.text(0.01, 0.99, hud_text, transform=self.ax.transAxes, 
-                     verticalalignment='top', horizontalalignment='left',
-                     family='monospace', fontsize=9, color='white', fontweight='bold',
-                     bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', boxstyle='round,pad=0.3'))
+        self.ax.text(0.01, 1.01, hud_text, transform=self.ax.transAxes, 
+                     verticalalignment='bottom', horizontalalignment='left',
+                     family='monospace', fontsize=8, color='white', fontweight='bold',
+                     bbox=dict(facecolor='black', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.4'))
 
-        # 4. Painel Lateral (Cases, Series & ROIs)
+        # 4. Sidebar Esquerda (Logo + Help)
+        if self.logo_img is not None:
+            # Desenhar logo no topo da sidebar esquerda
+            logo_inset = self.ax_left.inset_axes([0.1, 0.85, 0.8, 0.12])
+            logo_inset.imshow(self.logo_img)
+            logo_inset.axis('off')
+
+        if self.show_help:
+            # Bloco único de help na sidebar esquerda
+            help_txt = self._get_help_text()
+            self.ax_left.text(0.05, 0.82, help_txt, transform=self.ax_left.transAxes,
+                             va="top", ha="left", family='monospace', fontsize=9, color='white',
+                             bbox=dict(facecolor=(0,0,0,0.75), edgecolor="yellow", linewidth=1, boxstyle="round,pad=0.6"))
+        else:
+            self.ax_left.text(0.5, 0.82, "Pressione 'H'\npara ajuda", transform=self.ax_left.transAxes,
+                             va="top", ha="center", fontsize=9, color='gray', family='monospace', 
+                             fontweight='bold')
+
+        # 5. Painel Direito (Cases, Series & ROIs)
         total_series_pages = (len(self.series_list) - 1) // self.series_per_page + 1
         
         info_panel_text = ""
         
-        # Se estiver no modo SAMPLES, mostrar lista de casos
+        # Seção CASES
         if self.is_samples_mode:
             info_panel_text += "=== CASES ===\n"
             for i, c in enumerate(self.cases_list):
                 mark = ">" if i == self.current_case_idx else " "
-                info_panel_text += f"{mark}[{i+1}] {c}\n"
+                info_panel_text += f"{mark}[{i+1}] {c[:15]}\n"
             info_panel_text += "\n"
 
-        # T2 Quick Switch Block
+        # Seção T2 QUICK
         info_panel_text += "=== T2 QUICK ===\n"
         for orient in ['axial', 'coronal', 'sagittal']:
             idx = self.t2_quick[orient]
+            mark = ">" if idx == self.current_series_idx and idx is not None else " "
+            key = orient[0].upper()
             if idx is not None:
-                mark = ">" if idx == self.current_series_idx else " "
-                key = orient[0].upper()
                 name = self.series_list[idx]['series_name'][:12]
-                info_panel_text += f"{mark}({key}) {orient.upper()}: {name}\n"
+                info_panel_text += f"{mark}({key}) {orient[:3].upper()}: {name}\n"
             else:
-                info_panel_text += f"   {orient.upper()}: (not found)\n"
+                info_panel_text += f"   ({key}) {orient[:3].upper()}: -\n"
         info_panel_text += "\n"
 
-        info_panel_text += f"=== SERIES (Pg {self.series_page+1}/{total_series_pages}) ===\n"
+        # Seção SERIES
+        info_panel_text += f"=== SERIES ({self.series_page+1}/{total_series_pages}) ===\n"
         start_idx = self.series_page * self.series_per_page
         end_idx = min(start_idx + self.series_per_page, len(self.series_list))
         
@@ -428,18 +529,21 @@ class ViewerApp:
             info_panel_text += f"{mark}[{i+1}] {ser['series_name'][:12]} ({ser['orientation'][0].upper()})\n"
         
         info_panel_text += "\nUse [ ] to page\n"
+        
+        # Seção ROIs
         info_panel_text += "\n=== ROIs ===\n"
         if not self.rois:
-            info_panel_text += "Nenhuma ROI confirmada."
+            info_panel_text += "Nenhuma ROI.\n"
         else:
             for roi in self.rois:
                 i, j, k = roi['center_voxel']
+                # Tentar encontrar o plano da serie original da ROI
                 info_panel_text += (
                     f"#{roi['id']} | S:{k} | R:{roi['radius_mm']:.1f}\n"
-                    f"  Pos: ({i},{j})\n"
+                    f"  Pos:({int(i)},{int(j)})\n"
                 )
         
-        self.ax_info.text(0.05, 0.95, info_panel_text, transform=self.ax_info.transAxes,
+        self.ax_info.text(0.05, 0.98, info_panel_text, transform=self.ax_info.transAxes,
                          verticalalignment='top', family='monospace', fontsize=8)
 
         # 6. Desenhar ROIs confirmadas (Renderização 3D Tri-planar)
@@ -625,6 +729,9 @@ class ViewerApp:
                 self.delete_last_roi()
             elif event.key == 's':
                 self.save_json()
+            elif event.key == 'h':
+                self.show_help = not self.show_help
+                self.update_plot()
             elif event.key == ']':
                 max_pages = (len(self.series_list) - 1) // self.series_per_page
                 self.series_page = min(self.series_page + 1, max_pages)
@@ -683,10 +790,92 @@ class ViewerApp:
         
         self.rois.append(roi)
         self.last_message = f"ROI L{self.lesion_counter} confirmada!"
+        
+        # Exportar PNG e CSV
+        self._export_roi_assets(roi)
+        
         self.lesion_counter += 1
         self.is_locked = False
         self.candidate_center = None
         self.update_plot()
+
+    def _export_roi_assets(self, roi):
+        """Salva PNG do slice atual com a ROI e atualiza manifest.csv."""
+        case_name = self.cases_list[self.current_case_idx]
+        s = self.series_list[self.current_series_idx]
+        plane = s['orientation']
+        
+        # 1. Salvar PNG
+        # Vamos usar o canvas atual para capturar a imagem com as ROIs desenhadas
+        # mas apenas do eixo principal.
+        # Para garantir qualidade, vamos salvar o slice atual separadamente se necessário, 
+        # mas o requisito pede "imagem do slice atual com a ROI desenhada".
+        
+        roi_id = roi['id']
+        png_filename = f"case{case_name}_series{self.current_series_idx}_{plane}_slice{self.current_slice}_roi{roi_id}.png"
+        png_path = os.path.join(self.roi_img_dir, png_filename)
+        
+        try:
+            # Criar uma figura temporária para o export sem o HUD/Painel
+            fig_tmp, ax_tmp = plt.subplots(figsize=(8, 8))
+            ax_tmp.imshow(self.np_vol[self.current_slice, :, :], cmap='gray')
+            
+            # Desenhar a ROI confirmada (e outras se houver)
+            # Para o export, vamos focar na ROI atual em destaque (vermelha ou verde)
+            # Mas o requisito diz "com a ROI desenhada". Vamos desenhar a atual.
+            ci, cj, ck = roi['center_voxel']
+            r_mm = roi['radius_mm']
+            
+            # Cálculo de elipse para o export (mesma lógica do _draw_roi_sphere)
+            p_center = dicom_io.voxel_to_mm(ci, cj, ck, self.meta)
+            p_here = dicom_io.voxel_to_mm(ci, cj, self.current_slice, self.meta)
+            dz_mm = abs(p_here[2] - p_center[2])
+            
+            if dz_mm < r_mm:
+                r_slice_mm = (r_mm**2 - dz_mm**2)**0.5
+                r_px_x = r_slice_mm / self.meta['spacing'][0]
+                r_px_y = r_slice_mm / self.meta['spacing'][1]
+                
+                ellipse = Ellipse((ci, cj), width=r_px_x*2, height=r_px_y*2, 
+                                 fill=False, color='lime', linewidth=2)
+                ax_tmp.add_patch(ellipse)
+                ax_tmp.plot(ci, cj, '+', color='lime', markersize=10)
+                
+            ax_tmp.text(5, 15, f"CASE: {case_name} | SERIES: {self.current_series_idx}\nSLICE: {self.current_slice} | ROI: {roi_id} | R: {r_mm}mm", 
+                        color='yellow', fontsize=10, bbox=dict(facecolor='black', alpha=0.5))
+            
+            ax_tmp.axis('off')
+            plt.tight_layout()
+            fig_tmp.savefig(png_path, dpi=100, bbox_inches='tight', pad_inches=0)
+            plt.close(fig_tmp)
+            
+        except Exception as e:
+            print(f"[ERROR] Falha ao exportar PNG: {e}")
+
+        # 2. Atualizar CSV Manifest
+        manifest_path = os.path.join(self.export_dir, "roi_manifest.csv")
+        file_exists = os.path.isfile(manifest_path)
+        
+        try:
+            with open(manifest_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["timestamp", "case", "plane", "series_index", "series_name", "slice_index", "x", "y", "radius_mm", "dicom_dir"])
+                
+                writer.writerow([
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    case_name,
+                    plane,
+                    self.current_series_idx,
+                    s['series_name'],
+                    self.current_slice,
+                    f"{roi['center_mm'][0]:.2f}",
+                    f"{roi['center_mm'][1]:.2f}",
+                    roi['radius_mm'],
+                    self.dicom_root
+                ])
+        except Exception as e:
+            print(f"[ERROR] Falha ao atualizar manifest.csv: {e}")
 
     def save_json(self):
         case_name = self.cases_list[self.current_case_idx]

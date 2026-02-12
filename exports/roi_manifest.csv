@@ -1,0 +1,3 @@
+timestamp,case,plane,series_index,series_name,slice_index,x,y,radius_mm,dicom_dir
+2026-02-11 22:55:54,case1,axial,31,4.000000-t2tsetra-00702,4,48.01,-21.74,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1
+2026-02-11 23:03:53,case1,axial,31,4.000000-t2tsetra-00702,0,19.52,-48.84,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1
