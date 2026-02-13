@@ -20,6 +20,7 @@ def save_roi_json(output_path, case_id, rois, data_root, app_version="1.0.0-MVP"
             "case_id": case_id,
             "series_instance_uid": roi.get('series_uid', 'UNKNOWN'),
             "center_xyz_mm": roi['center_mm'],
+            "center_ijk": roi.get('center_voxel', [0, 0, 0]),
             "radius_mm": roi['radius_mm'],
             "timestamp_iso": datetime.now().isoformat()
         }
