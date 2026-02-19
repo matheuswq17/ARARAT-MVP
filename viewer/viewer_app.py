@@ -1,3 +1,5 @@
+from pathlib import Path
+from viewer.inference_bridge import predict_for_export_folder
 import sys
 import os
 import argparse
@@ -1323,6 +1325,25 @@ class ViewerApp:
             self.last_message = f"Export OK: {case_name}/{timestamp}"
             self.last_export_dir = export_case_dir
             print(f"\n[INFO] Export Pipeline completo em: {export_case_dir}")
+            
+            # Inferência imediata usando ponte (features CSV + venv_infer)
+            try:
+                dicom_dir = Path(self.meta['series_dir']) if (self.meta and 'series_dir' in self.meta) else Path(self.dicom_root or '')
+                export_dir = Path(self.last_export_dir)
+                preds = predict_for_export_folder(dicom_dir=dicom_dir, export_dir=export_dir)
+                if preds:
+                    if len(preds) == 1:
+                        first = preds[0]
+                        thr = first.get('thr_cv', first.get('threshold', 0.5))
+                        lesion = first.get('lesion', 'ROI')
+                        self.last_message = f"PRED {lesion}: {first['prob_pos']:.3f} (thr {thr:.3f}) => {first['pred_label']}"
+                    else:
+                        summary = ", ".join([f"{p.get('lesion','?')}={p['prob_pos']:.3f}" for p in preds])
+                        self.last_message = f"PRED: {summary}"
+                else:
+                    self.last_message = "INFER ERROR: sem resultados"
+            except Exception as e:
+                self.last_message = f"INFER ERROR: {e}"
         except Exception as e:
             self.last_message = f"ERRO no export: {str(e)[:20]}..."
             print(f"[ERROR] Falha no export pipeline: {e}")

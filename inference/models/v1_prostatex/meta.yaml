@@ -1,0 +1,31 @@
+# FILE: inference/models/v1_prostatex/meta.yaml
+name: v1_prostatex
+model_type: sklearn_pipeline
+task: binary_classification
+
+model_file: model.joblib
+schema_file: schema.json
+
+pos_label: 1
+threshold_default: 0.616233079159883
+thr_cv: 0.616233079159883
+
+features:
+  - tumor_vs_não_tumor
+  - original_glszm_LargeAreaEmphasis
+  - original_glszm_SizeZoneNonUniformity
+  - original_firstorder_Median
+  - original_glszm_GrayLevelNonUniformity
+  - original_firstorder_90Percentile
+  - original_shape_Maximum2DDiameterRow
+  - original_gldm_GrayLevelNonUniformity
+  - original_glszm_GrayLevelNonUniformityNormalized
+  - original_glszm_SizeZoneNonUniformityNormalized
+  - original_glszm_ZonePercentage
+  - original_glszm_LargeAreaHighGrayLevelEmphasis
+  - original_glszm_HighGrayLevelZoneEmphasis
+  - original_firstorder_Minimum
+  - original_firstorder_InterquartileRange
+  - original_firstorder_Range
+  - original_firstorder_10Percentile
+  - original_gldm_DependenceNonUniformity

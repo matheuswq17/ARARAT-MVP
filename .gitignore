@@ -1,19 +1,80 @@
-# Python
+# =========================
+# Python / caches
+# =========================
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
-.venv/
-venv/
-.env
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
-# Outputs
+# =========================
+# Virtual envs
+# =========================
+.venv/
+.venv*/
+venv/
+env/
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# =========================
+# Local configs (não versionar)
+# =========================
+viewer/config_local.json
 viewer/roi_selection.json
 
-# Dataset / imagens médicas (NÃO subir)
+# =========================
+# Dados e outputs pesados (não versionar)
+# =========================
 data/
-**/*.dcm
+exports/
+roi_images/
 
-# OS/IDE
-.DS_Store
-.vscode/
+# (se você quiser manter só placeholders no repo)
+!data/.gitkeep
+!exports/.gitkeep
+!roi_images/.gitkeep
+!data/README.md
+!exports/README.md
+!roi_images/README.md
+
+# =========================
+# Artefatos gerados de inferência / testes locais
+# =========================
+pred*.json
+pred_all.csv
+features_ready.csv
+inference_template_features.csv
+inference/_tmp_*.csv
+inference/_tmp_*.json
+inference_tmp_*.csv
+inference_tmp_*.json
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Model artifacts (opcional)
+# =========================
+# Se você NÃO quiser versionar modelos:
+# *.joblib
+# *.pkl
+# *.onnx
+
+# Se você QUISER versionar SOMENTE o modelo oficial do viewer,
+# mas ignorar quaisquer outros joblibs espalhados:
+# *.joblib
+# !inference/models/**/model.joblib

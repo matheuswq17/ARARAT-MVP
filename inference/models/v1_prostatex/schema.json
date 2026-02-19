@@ -1,0 +1,27 @@
+{
+  "name": "v1_prostatex",
+  "model_type": "sklearn_pipeline",
+  "task": "binary_classification",
+  "pos_label": 1,
+  "threshold_default": 0.616233079159883,
+  "features": [
+    { "name": "tumor_vs_não_tumor", "dtype": "float", "required": true },
+    { "name": "original_glszm_LargeAreaEmphasis", "dtype": "float", "required": true },
+    { "name": "original_glszm_SizeZoneNonUniformity", "dtype": "float", "required": true },
+    { "name": "original_firstorder_Median", "dtype": "float", "required": true },
+    { "name": "original_glszm_GrayLevelNonUniformity", "dtype": "float", "required": true },
+    { "name": "original_firstorder_90Percentile", "dtype": "float", "required": true },
+    { "name": "original_shape_Maximum2DDiameterRow", "dtype": "float", "required": true },
+    { "name": "original_gldm_GrayLevelNonUniformity", "dtype": "float", "required": true },
+    { "name": "original_glszm_GrayLevelNonUniformityNormalized", "dtype": "float", "required": true },
+    { "name": "original_glszm_SizeZoneNonUniformityNormalized", "dtype": "float", "required": true },
+    { "name": "original_glszm_ZonePercentage", "dtype": "float", "required": true },
+    { "name": "original_glszm_LargeAreaHighGrayLevelEmphasis", "dtype": "float", "required": true },
+    { "name": "original_glszm_HighGrayLevelZoneEmphasis", "dtype": "float", "required": true },
+    { "name": "original_firstorder_Minimum", "dtype": "float", "required": true },
+    { "name": "original_firstorder_InterquartileRange", "dtype": "float", "required": true },
+    { "name": "original_firstorder_Range", "dtype": "float", "required": true },
+    { "name": "original_firstorder_10Percentile", "dtype": "float", "required": true },
+    { "name": "original_gldm_DependenceNonUniformity", "dtype": "float", "required": true }
+  ]
+}

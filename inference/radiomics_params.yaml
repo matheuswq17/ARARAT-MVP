@@ -1,0 +1,20 @@
+setting:
+  label: 1
+  binWidth: 25
+  correctMask: true
+
+  # Se você tiver certeza que o treino foi 1x1x1:
+  resampledPixelSpacing: [1, 1, 1]
+  interpolator: sitkBSpline
+
+  normalize: true
+  normalizeScale: 100
+
+imageType:
+  Original: {}
+
+featureClass:
+  firstorder: []
+  shape: []
+  glszm: []
+  gldm: []
