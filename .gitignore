@@ -70,9 +70,9 @@ inference_tmp_*.json
 # Model artifacts (opcional)
 # =========================
 # Se você NÃO quiser versionar modelos:
-# *.joblib
-# *.pkl
-# *.onnx
+ *.joblib
+ *.pkl
+ *.onnx
 
 # Se você QUISER versionar SOMENTE o modelo oficial do viewer,
 # mas ignorar quaisquer outros joblibs espalhados:

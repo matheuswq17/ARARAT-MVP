@@ -7,6 +7,7 @@ import json
 import csv
 import traceback
 from datetime import datetime
+import time
 from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
@@ -129,6 +130,12 @@ class ViewerApp:
         self.lesion_counter = 1
         self.last_message = "Pronto"
         self.show_help = False
+        self.last_preds = []
+        self.roi_pred_map = {}
+        self.show_predictions_panel = False
+        self.toast_message = None
+        self.toast_until = 0.0
+        self.toast_artist = None
         
         self.fig = None
         self.ax = None
@@ -840,6 +847,28 @@ class ViewerApp:
                              va="top", ha="center", fontsize=9, color='gray', family='monospace', 
                              fontweight='bold')
 
+        if self.toast_artist is not None:
+            try:
+                self.toast_artist.remove()
+            except Exception:
+                pass
+            self.toast_artist = None
+        if self.toast_message and time.time() < self.toast_until:
+            self.toast_artist = self.fig.text(
+                0.5,
+                0.02,
+                self.toast_message,
+                transform=self.fig.transFigure,
+                ha="center",
+                va="bottom",
+                family="monospace",
+                fontsize=10,
+                color="yellow",
+                bbox=dict(facecolor="black", alpha=0.8, edgecolor="yellow", boxstyle="round,pad=0.4"),
+            )
+        elif self.toast_message and time.time() >= self.toast_until:
+            self.toast_message = None
+
         # 5. Painel Direito (Cases, Series & ROIs)
         total_series_pages = (len(self.series_list) - 1) // self.series_per_page + 1 if self.series_list else 0
         
@@ -894,17 +923,41 @@ class ViewerApp:
                     f"{lid} | S:{roi['center_voxel'][2]} | R:{roi['radius_mm']:.1f} | {status}\n"
                     f"  Pos:({roi['center_voxel'][0]},{roi['center_voxel'][1]})\n"
                 )
+
+        if self.show_predictions_panel and self.last_preds:
+            info_panel_text += "\n=== PREDIÇÕES ===\n"
+            for p in self.last_preds:
+                lesion = p.get("lesion", "?")
+                perc = p.get("risk_percent", p.get("prob_pos", 0.0) * 100.0)
+                cat = p.get("risk_category", "")
+                label = p.get("pred_label", "")
+                info_panel_text += f"{lesion}: {perc:.0f}% ({cat}) -> {label}\n"
         
         self.ax_info.text(0.05, 0.98, info_panel_text, transform=self.ax_info.transAxes,
                          verticalalignment='top', family='monospace', fontsize=8)
 
         # 6. Desenhar ROIs confirmadas (Renderização 3D Tri-planar)
         for roi in self.rois:
+            color = "lime"
+            text_label = roi["id"]
+            pred = self.roi_pred_map.get(roi["id"]) if self.roi_pred_map else None
+            if pred:
+                cat = pred.get("risk_category", "")
+                perc = pred.get("risk_percent", pred.get("prob_pos", 0.0) * 100.0)
+                if cat == "Baixo":
+                    color = "lime"
+                elif cat == "Intermediário":
+                    color = "yellow"
+                elif cat == "Alto":
+                    color = "red"
+                else:
+                    color = "cyan"
+                text_label = f"{roi['id']} {perc:.0f}% {cat}"
             self._draw_roi_sphere(
                 roi['center_voxel'], 
                 roi['radius_mm'], 
-                color='lime', 
-                label=roi['id'],
+                color=color,
+                label=text_label,
                 linestyle='-',
                 alpha=0.8,
                 roi_mm=roi['center_mm']
@@ -1089,6 +1142,13 @@ class ViewerApp:
                 self.open_last_export_dir()
             elif event.key == 'v':
                 self.validate_rois()
+            elif event.key == 'p':
+                self.show_predictions_panel = not self.show_predictions_panel
+                if self.show_predictions_panel:
+                    print("Pred panel enabled")
+                else:
+                    print("Pred panel disabled")
+                self.update_plot()
             elif event.key == 'h':
                 self.show_help = not self.show_help
                 self.update_plot()
@@ -1332,14 +1392,31 @@ class ViewerApp:
                 export_dir = Path(self.last_export_dir)
                 preds = predict_for_export_folder(dicom_dir=dicom_dir, export_dir=export_dir)
                 if preds:
+                    self.last_preds = preds
+                    self.roi_pred_map = {}
+                    for p in preds:
+                        lid = p.get("lesion")
+                        if lid:
+                            self.roi_pred_map[lid] = p
                     if len(preds) == 1:
                         first = preds[0]
                         thr = first.get('thr_cv', first.get('threshold', 0.5))
                         lesion = first.get('lesion', 'ROI')
-                        self.last_message = f"PRED {lesion}: {first['prob_pos']:.3f} (thr {thr:.3f}) => {first['pred_label']}"
+                        perc = first.get('risk_percent', first['prob_pos'] * 100.0)
+                        cat = first.get('risk_category', '')
+                        self.last_message = f"PRED {lesion}: {perc:.0f}% ({cat}) | thr={thr:.3f} -> {first['pred_label']}"
                     else:
-                        summary = ", ".join([f"{p.get('lesion','?')}={p['prob_pos']:.3f}" for p in preds])
+                        parts = []
+                        for p in preds:
+                            lesion = p.get('lesion', '?')
+                            perc = p.get('risk_percent', p['prob_pos'] * 100.0)
+                            cat = p.get('risk_category', '')
+                            parts.append(f"{lesion}={perc:.0f}%({cat})")
+                        summary = ", ".join(parts)
                         self.last_message = f"PRED: {summary}"
+                    self.toast_message = self.last_message
+                    self.toast_until = time.time() + 8.0
+                    print("HUD prediction toast enabled")
                 else:
                     self.last_message = "INFER ERROR: sem resultados"
             except Exception as e:
