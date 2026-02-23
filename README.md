@@ -39,3 +39,20 @@ scripts\run_infer_features.ps1 -FeaturesCsv "caminho\para\features.csv" -RowInde
 ```powershell
 .\.venv_infer\Scripts\python -m inference.infer_cli --dicom_dir "C:\pasta\serie" --mask "C:\pasta\mask_L1.nii.gz" --model_dir "inference\models\v1_prostatex"
 ```
+
+## Modo Dev / Gabarito (GT) no Viewer
+- Labels reais do PROSTATEx:
+  - Coloque o CSV oficial em `data/PROSTATEx/LABELS/`, por exemplo:
+    - `ProstateX-Findings-Train.csv`
+    - `ProstateX-Findings-Test.csv`
+    - `prostatex_findings.csv`
+    - `labels.csv` / `labels.json`
+  - O viewer autodetecta o primeiro arquivo existente nessa ordem.
+- Mapeamento de cases:
+  - Para usar SAMPLES (`case1`, `case2`, ...), crie opcionalmente:
+    - `data/PROSTATEx/SAMPLES/sample_case_map.json`
+    - Exemplo:
+      - `{ "case1": "ProstateX-0222", "case2": "ProstateX-0223", "case3": "ProstateX-0256" }`
+- Uso no viewer:
+  - `G`: alterna exibição do gabarito GT no slice atual.
+  - `Shift+G`: pula para o slice da lesão GT mais próxima (usa última ROI como referência, ou primeira lesão GT).

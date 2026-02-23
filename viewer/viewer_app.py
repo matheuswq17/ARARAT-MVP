@@ -23,12 +23,13 @@ try:
     from shared import dicom_io
     from .exporters import roi_export
     from .exporters import mask_export
+    from . import gt_labels
 except (ImportError, ValueError) as e:
-    # Caso rodando como script direto, tenta import absoluto
     try:
         from shared import dicom_io
         from viewer.exporters import roi_export
         from viewer.exporters import mask_export
+        from viewer import gt_labels
     except ImportError as e2:
         print(f"Erro fatal ao importar dependencias: {e2}")
         sys.exit(1)
@@ -126,9 +127,12 @@ class ViewerApp:
             'text': None
         }
         
-        self.rois = [] # ROIs confirmadas
+        self.rois = []
         self.lesion_counter = 1
         self.last_message = "Pronto"
+        self.last_key = None
+        self.gt_patient_id = None
+        self.gt_label_source = None
         self.show_help = False
         self.last_preds = []
         self.roi_pred_map = {}
@@ -136,6 +140,9 @@ class ViewerApp:
         self.toast_message = None
         self.toast_until = 0.0
         self.toast_artist = None
+        self.show_gt = False
+        self.gt_lesions = []
+        self.gt_threshold_mm = 10.0
         
         self.fig = None
         self.ax = None
@@ -395,6 +402,8 @@ class ViewerApp:
         self.case_input_str = ""
         self.series_input_str = ""
         self.last_message = f"Caso {new_case_name} carregado."
+        self.show_gt = False
+        self.gt_lesions = []
         
         # Recarregar séries do novo caso
         self.discover_series()
@@ -404,6 +413,26 @@ class ViewerApp:
         if self.fig:
             self.update_plot()
         return True
+
+    def _load_gt_for_case(self):
+        if not self.cases_list or self.current_case_idx < 0:
+            self.gt_lesions = []
+            return
+        case_name = self.cases_list[self.current_case_idx]
+        try:
+            patient_id = gt_labels.resolve_patient_id(case_name, self.input_root)
+        except Exception:
+            patient_id = None
+        self.gt_patient_id = patient_id
+        if not patient_id:
+            self.gt_lesions = []
+            self.last_message = f"GT indisponivel: nao foi possivel mapear {case_name}"
+            return
+        try:
+            self.gt_lesions = gt_labels.get_gt_for_case(patient_id, self.input_root)
+        except Exception:
+            self.gt_lesions = []
+        self.gt_label_source = self.gt_lesions[0].get("source") if self.gt_lesions else None
 
     def discover_series(self):
         """Busca series no dicom_root atual."""
@@ -510,7 +539,7 @@ class ViewerApp:
             self.max_slice = 0
             self.current_slice = 0
             return
-
+        self._load_gt_for_case()
         case_name = self.cases_list[self.current_case_idx] if self.cases_list else "unknown"
         s_idx = self.current_series_idx
         cache_key = (case_name, s_idx)
@@ -763,7 +792,7 @@ class ViewerApp:
             fmt_line("Ctrl + G", "ir para serie N"),
             fmt_line("Ctrl + Up/Dn", "navegar paciente"),
             fmt_line("C + num + Enter", "ir para paciente N"),
-            fmt_line("A / K / G", "T2 Axial/Cor/Sag"),
+            fmt_line("A / K / S", "T2 Axial/Cor/Sag"),
             "",
             "ROI (LESAO)",
             fmt_line("Clique esq.", "travar centro"),
@@ -773,6 +802,8 @@ class ViewerApp:
             fmt_line("Del", "deletar ultima"),
             "",
             "GERAL",
+            fmt_line("G", "alternar GT (gabarito)"),
+            fmt_line("Shift+G", "pular para slice da lesao GT"),
             fmt_line("E", "EXPORTAR (JSON+NIfTI)"),
             fmt_line("F", "ABRIR ULTIMO EXPORT"),
             fmt_line("V", "VALIDAR ROIs (log)"),
@@ -823,6 +854,8 @@ class ViewerApp:
         hud_text = f"{line1}\n{line2}"
         if self.last_message:
             hud_text += f"\nLAST: {self.last_message}"
+        if self.last_key:
+            hud_text += f"\nKEY: {self.last_key}"
 
         self.ax.text(0.01, 1.01, hud_text, transform=self.ax.transAxes, 
                      verticalalignment='bottom', horizontalalignment='left',
@@ -888,8 +921,7 @@ class ViewerApp:
             for orient in ['axial', 'coronal', 'sagittal']:
                 idx = self.t2_quick[orient]
                 mark = ">" if idx == self.current_series_idx and idx is not None else " "
-                # Mapeamento de teclas: A para axial, K para coronal, G para sagittal
-                key_map = {'axial': 'A', 'coronal': 'K', 'sagittal': 'G'}
+                key_map = {'axial': 'A', 'coronal': 'K', 'sagittal': 'S'}
                 key = key_map[orient]
                 if idx is not None:
                     name = self.series_list[idx]['series_name'][:12]
@@ -916,13 +948,84 @@ class ViewerApp:
             info_panel_text += "Nenhuma ROI.\n"
         else:
             for roi in self.rois:
-                lid = roi['id']
+                lid = roi["id"]
                 status = self.roi_status.get(lid, "??")
-                
                 info_panel_text += (
                     f"{lid} | S:{roi['center_voxel'][2]} | R:{roi['radius_mm']:.1f} | {status}\n"
                     f"  Pos:({roi['center_voxel'][0]},{roi['center_voxel'][1]})\n"
                 )
+
+        if self.show_gt:
+            info_panel_text += "\n=== GABARITO (GT) ===\n"
+            info_panel_text += f"case_name={self.cases_list[self.current_case_idx]}\n"
+            info_panel_text += f"patient_id_resolved={self.gt_patient_id or 'None'}\n"
+            info_panel_text += f"labels_source={self.gt_label_source or 'None'}\n"
+            if not self.gt_lesions:
+                info_panel_text += "GT indisponivel: labels nao encontradas ou mapping ausente\n"
+            elif self.meta is None or self.np_vol is None:
+                info_panel_text += "GT coords nao projetaveis\n"
+            else:
+                sz_k, sz_j, sz_i = self.np_vol.shape
+                any_proj = False
+                any_oob = False
+                for idx, lesion in enumerate(self.gt_lesions, 1):
+                    x, y, z = lesion["xyz_mm"]
+                    vi, vj, vk = dicom_io.mm_to_voxel(x, y, z, self.meta)
+                    vi_int = int(round(vi))
+                    vj_int = int(round(vj))
+                    vk_int = int(round(vk))
+                    in_bounds = (
+                        0 <= vk_int < sz_k and
+                        0 <= vi_int < sz_i and
+                        0 <= vj_int < sz_j
+                    )
+                    if in_bounds:
+                        any_proj = True
+                    else:
+                        any_oob = True
+                    ggg = lesion.get("ggg")
+                    isup = lesion.get("isup")
+                    clinsig = lesion.get("clinsig")
+                    zone = lesion.get("zone")
+                    lid = lesion.get("lesion_id") or f"L{idx}"
+                    src = lesion.get("source")
+                    parts = [f"{lid}:"]
+                    if ggg or isup:
+                        parts.append(f"GGG={ggg or '-'} ISUP={isup or '-'}")
+                    if clinsig is not None:
+                        parts.append(f"ClinSig={clinsig}")
+                    if zone is not None:
+                        parts.append(f"zone={zone}")
+                    parts.append(f"xyz=({x:.1f},{y:.1f},{z:.1f})")
+                    parts.append(f"voxel=({vi_int},{vj_int},{vk_int})")
+                    parts.append(f"slice={vk_int}")
+                    parts.append(f"in_bounds={str(in_bounds).lower()}")
+                    line = " | ".join(parts)
+                    if src:
+                        line += f" | source={src}"
+                    info_panel_text += line + "\n"
+                if not any_proj:
+                    info_panel_text += "GT coords nao projetaveis\n"
+                if any_oob:
+                    info_panel_text += "GT fora do volume desta serie (possivel mismatch: labels referem outra serie/orientacao).\n"
+
+        if self.show_gt and self.rois and self.gt_lesions:
+            info_panel_text += "\n=== ROI vs GT ===\n"
+            for roi in self.rois:
+                best = None
+                for lesion in self.gt_lesions:
+                    x, y, z = lesion["xyz_mm"]
+                    cx, cy, cz = roi["center_mm"]
+                    dx = cx - x
+                    dy = cy - y
+                    dz = cz - z
+                    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+                    if best is None or dist < best[0]:
+                        best = (dist, lesion)
+                if best is not None:
+                    dist_mm, lesion = best
+                    status = "PERTO" if dist_mm <= self.gt_threshold_mm else "LONGE"
+                    info_panel_text += f"{roi['id']} -> {dist_mm:.1f} mm ({status})\n"
 
         if self.show_predictions_panel and self.last_preds:
             info_panel_text += "\n=== PREDIÇÕES ===\n"
@@ -954,19 +1057,96 @@ class ViewerApp:
                     color = "cyan"
                 text_label = f"{roi['id']} {perc:.0f}% {cat}"
             self._draw_roi_sphere(
-                roi['center_voxel'], 
-                roi['radius_mm'], 
+                roi['center_voxel'],
+                roi['radius_mm'],
                 color=color,
                 label=text_label,
                 linestyle='-',
                 alpha=0.8,
-                roi_mm=roi['center_mm']
+                roi_mm=roi['center_mm'],
             )
 
+        if self.show_gt and self.gt_lesions and self.meta is not None and self.np_vol is not None:
+            sz_k, sz_j, sz_i = self.np_vol.shape
+            for idx, lesion in enumerate(self.gt_lesions, 1):
+                x, y, z = lesion["xyz_mm"]
+                vi, vj, vk = dicom_io.mm_to_voxel(x, y, z, self.meta)
+                vi_int = int(round(vi))
+                vj_int = int(round(vj))
+                vk_int = int(round(vk))
+                if not (0 <= vk_int < sz_k and 0 <= vi_int < sz_i and 0 <= vj_int < sz_j):
+                    continue
+                if vk_int != self.current_slice:
+                    continue
+                lid = lesion.get("lesion_id") or f"L{idx}"
+                label = f"GT {lid}"
+                clinsig = lesion.get("clinsig")
+                zone = lesion.get("zone")
+                extra = []
+                if clinsig is not None:
+                    extra.append(f"ClinSig={clinsig}")
+                if zone is not None:
+                    extra.append(f"zone={zone}")
+                ggg = lesion.get("ggg")
+                isup = lesion.get("isup")
+                if not extra:
+                    if ggg:
+                        extra.append(f"GGG={ggg}")
+                    if isup:
+                        extra.append(f"ISUP={isup}")
+                if extra:
+                    label += " | " + " | ".join(extra)
+                self.ax.plot(vi_int, vj_int, marker="x", color="magenta", markersize=10, linewidth=2)
+                self.ax.text(
+                    vi_int + 2,
+                    vj_int + 2,
+                    label,
+                    color="magenta",
+                    fontsize=8,
+                    fontweight="bold",
+                )
+
         self.fig.canvas.draw_idle()
-        # Preview será desenhado via blitting no on_draw ou manualmente aqui se background já existe
         if self.background:
             self._draw_preview_fast()
+
+    def _toggle_gt(self):
+        if not self.cases_list or self.current_case_idx < 0:
+            return
+        if not self.gt_lesions:
+            self._load_gt_for_case()
+        self.show_gt = not self.show_gt
+        if self.show_gt and not self.gt_lesions:
+            self.last_message = "GT indisponivel"
+        self.update_plot()
+
+    def _jump_to_gt_slice(self):
+        if not self.gt_lesions or self.meta is None or self.np_vol is None:
+            return
+        if self.rois:
+            ref = self.rois[-1]["center_mm"]
+        else:
+            ref = self.gt_lesions[0]["xyz_mm"]
+        best = None
+        for lesion in self.gt_lesions:
+            x, y, z = lesion["xyz_mm"]
+            cx, cy, cz = ref
+            dx = cx - x
+            dy = cy - y
+            dz = cz - z
+            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if best is None or dist < best[0]:
+                best = (dist, lesion)
+        if best is None:
+            return
+        x, y, z = best[1]["xyz_mm"]
+        vi, vj, vk = dicom_io.mm_to_voxel(x, y, z, self.meta)
+        k_int = int(round(vk))
+        if k_int < 0 or k_int > self.max_slice:
+            return
+        self.current_slice = k_int
+        self.last_message = "Pulando para slice GT"
+        self.update_plot()
 
     def on_mouse_move(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
@@ -1005,20 +1185,22 @@ class ViewerApp:
 
     def on_key(self, event):
         try:
+            self.last_key = event.key
+            print(f"[KEY] mode={self.mode} key={event.key}")
             if event.key == 'q':
                 plt.close()
                 return
 
-            # Detectar Ctrl
             is_ctrl = event.key.startswith('ctrl+')
 
-            # Atalhos de Navegação T2 Quick (A, K, G)
-            if self.mode == "NORMAL" and not is_ctrl and event.key in ['a', 'k', 'g']:
+            if self.mode == "NORMAL" and not is_ctrl and event.key in ['a', 'k', 's']:
                 target = None
-                if event.key == 'a': target = 'axial'
-                elif event.key == 'k': target = 'coronal' # K de Coronal (C conflita com Case)
-                elif event.key == 'g': target = 'sagittal' # G de SaGittal (S conflita com Save)
-                
+                if event.key == 'a':
+                    target = 'axial'
+                elif event.key == 'k':
+                    target = 'coronal'
+                elif event.key == 's':
+                    target = 'sagittal'
                 if target:
                     if self.t2_quick[target] is not None:
                         last_center_mm = self.rois[-1]['center_mm'] if self.rois else None
@@ -1030,6 +1212,14 @@ class ViewerApp:
                         self.last_message = f"T2 {target.upper()} nao disponivel neste case."
                     self.update_plot()
                     return
+
+            if self.mode == "NORMAL" and event.key == 'g':
+                self._toggle_gt()
+                return
+
+            if self.mode == "NORMAL" and event.key == 'G':
+                self._jump_to_gt_slice()
+                return
 
             # Modo Go-to Series (Ctrl+G)
             if self.mode == "NORMAL" and event.key == 'ctrl+g':
