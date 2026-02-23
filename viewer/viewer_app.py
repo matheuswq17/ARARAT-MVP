@@ -1,5 +1,4 @@
 from pathlib import Path
-from viewer.inference_bridge import predict_for_export_folder
 import sys
 import os
 import argparse
@@ -13,23 +12,24 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Circle, Ellipse, Rectangle
 
-# adicionar raiz do projeto ao path para importar shared
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
-    sys.path.append(project_root)
+    sys.path.insert(0, project_root)
 
 try:
     from shared import dicom_io
     from .exporters import roi_export
     from .exporters import mask_export
     from . import gt_labels
+    from .inference_bridge import predict_for_export_folder
 except (ImportError, ValueError) as e:
     try:
         from shared import dicom_io
         from viewer.exporters import roi_export
         from viewer.exporters import mask_export
         from viewer import gt_labels
+        from viewer.inference_bridge import predict_for_export_folder
     except ImportError as e2:
         print(f"Erro fatal ao importar dependencias: {e2}")
         sys.exit(1)
@@ -106,6 +106,9 @@ class ViewerApp:
         
         self.current_slice = 0
         self.max_slice = 0
+        self.center_voxel = [0, 0, 0]
+        self.center_mm = None
+        self.active_view = "axial"
         
         # ROI Candidata (Preview)
         self.candidate_center = None # (i, j, k) - None se seguindo mouse
@@ -145,9 +148,11 @@ class ViewerApp:
         self.gt_threshold_mm = 10.0
         
         self.fig = None
-        self.ax = None
-        self.ax_left = None
+        self.ax_axial = None
+        self.ax_sag = None
+        self.ax_cor = None
         self.ax_info = None
+        self.ax = None
         
         # Export Info
         self.last_export_dir = None
@@ -538,6 +543,8 @@ class ViewerApp:
             self.sitk_img, self.np_vol, self.meta = None, None, None
             self.max_slice = 0
             self.current_slice = 0
+            self.center_voxel = [0, 0, 0]
+            self.center_mm = None
             return
         self._load_gt_for_case()
         case_name = self.cases_list[self.current_case_idx] if self.cases_list else "unknown"
@@ -591,19 +598,57 @@ class ViewerApp:
             v = dicom_io.mm_to_voxel(roi['center_mm'][0], roi['center_mm'][1], roi['center_mm'][2], self.meta)
             roi['center_voxel'] = [int(round(v[0])), int(round(v[1])), int(round(v[2]))]
         
-        # Posicionamento do Slice
+        # Posicionamento do centro
+        sz_k, sz_j, sz_i = self.np_vol.shape
         if center_mm:
-            _, _, k = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
-            self.current_slice = int(round(max(0, min(k, self.max_slice))))
+            vi, vj, vk = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
+            i = int(round(max(0, min(vi, sz_i - 1))))
+            j = int(round(max(0, min(vj, sz_j - 1))))
+            k = int(round(max(0, min(vk, sz_k - 1))))
+            self._set_center_voxel(i, j, k)
+        elif self.center_mm is not None:
+            vi, vj, vk = dicom_io.mm_to_voxel(self.center_mm[0], self.center_mm[1], self.center_mm[2], self.meta)
+            i = int(round(max(0, min(vi, sz_i - 1))))
+            j = int(round(max(0, min(vj, sz_j - 1))))
+            k = int(round(max(0, min(vk, sz_k - 1))))
+            self._set_center_voxel(i, j, k)
         else:
-            self.current_slice = min(self.current_slice, self.max_slice)
-            if self.current_slice < 0:
-                self.current_slice = self.max_slice // 2
+            i = sz_i // 2
+            j = sz_j // 2
+            k = sz_k // 2
+            self._set_center_voxel(i, j, k)
         
         self.candidate_center = None
         self.is_locked = False
         self.last_message = "Pronto"
         if self.fig: self.update_plot()
+
+    def _set_center_voxel(self, i, j, k):
+        if self.np_vol is None or self.meta is None:
+            self.center_voxel = [int(i), int(j), int(k)]
+            self.current_slice = int(k)
+            return
+        sz_k, sz_j, sz_i = self.np_vol.shape
+        i = int(max(0, min(i, sz_i - 1)))
+        j = int(max(0, min(j, sz_j - 1)))
+        k = int(max(0, min(k, sz_k - 1)))
+        self.center_voxel = [i, j, k]
+        self.current_slice = k
+        x_mm, y_mm, z_mm = dicom_io.voxel_to_mm(i, j, k, self.meta)
+        self.center_mm = [float(x_mm), float(y_mm), float(z_mm)]
+
+    def _move_center_slice(self, plane, delta):
+        if self.np_vol is None:
+            return
+        sz_k, sz_j, sz_i = self.np_vol.shape
+        i, j, k = self.center_voxel
+        if plane == "axial":
+            k = int(max(0, min(k + delta, sz_k - 1)))
+        elif plane == "sagittal":
+            i = int(max(0, min(i + delta, sz_i - 1)))
+        elif plane == "coronal":
+            j = int(max(0, min(j + delta, sz_j - 1)))
+        self._set_center_voxel(i, j, k)
 
     def run(self):
         # Desativar hotkeys padrão do matplotlib que podem causar conflitos
@@ -616,16 +661,19 @@ class ViewerApp:
         plt.rcParams['keymap.zoom'] = ''
         plt.rcParams['keymap.quit'] = ''
 
-        # Usar gridspec para criar um layout com 3 colunas: Sidebar Left, Main Image, Info Right
         self.fig = plt.figure(figsize=(16, 10))
-        gs = self.fig.add_gridspec(1, 3, width_ratios=[1.2, 4, 1.2])
+        gs = self.fig.add_gridspec(2, 3, width_ratios=[3, 3, 2], height_ratios=[3, 3])
         
-        self.ax_left = self.fig.add_subplot(gs[0])
-        self.ax = self.fig.add_subplot(gs[1])
-        self.ax_info = self.fig.add_subplot(gs[2])
+        self.ax_axial = self.fig.add_subplot(gs[0, 0])
+        self.ax_sag = self.fig.add_subplot(gs[0, 1])
+        self.ax_cor = self.fig.add_subplot(gs[1, 0:2])
+        self.ax_info = self.fig.add_subplot(gs[:, 2])
+        self.ax = self.ax_axial
         
-        self.ax_left.axis('off')
-        self.ax_info.axis('off') 
+        self.ax_axial.axis('off')
+        self.ax_sag.axis('off')
+        self.ax_cor.axis('off')
+        self.ax_info.axis('off')
 
         # Desativar toolbar para evitar pan/zoom acidental
         self.fig.canvas.toolbar.pack_forget()
@@ -657,17 +705,13 @@ class ViewerApp:
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.fig.canvas.mpl_connect('draw_event', self.on_draw)
         
-        # Ajustar margens para o novo layout com sidebar
-        plt.subplots_adjust(top=0.92, bottom=0.05, left=0.02, right=0.98, wspace=0.1)
+        # Ajustar margens/espacamentos para layout mais compacto (PACS-like)
+        plt.subplots_adjust(top=0.95, bottom=0.05, left=0.03, right=0.98, wspace=0.03, hspace=0.04)
         
         plt.show()
 
     def on_draw(self, event):
-        """Captura o background para blitting após o primeiro draw."""
-        if event is not None and event.canvas != self.fig.canvas:
-            return
-        self.background = self.fig.canvas.copy_from_bbox(self.ax.bbox)
-        self._draw_preview_fast()
+        return
 
     def _draw_preview_fast(self):
         """Desenha o preview da ROI usando blitting e artists persistentes."""
@@ -743,7 +787,6 @@ class ViewerApp:
         self.fig.canvas.blit(self.ax.bbox)
 
     def _draw_roi_sphere(self, center_ijk, radius_mm, color, label=None, linestyle='-', alpha=1.0, roi_mm=None):
-        """Desenha a interseção da esfera ROI com o slice atual, suportando multi-planos."""
         if self.meta is None:
             return
             
@@ -759,21 +802,13 @@ class ViewerApp:
         dz_mm = abs(p_here[2] - p_center[2])
         
         if dz_mm < radius_mm:
-            # Raio da seção circular no slice atual (em mm) usando Pitágoras
             r_slice_mm = (radius_mm**2 - dz_mm**2)**0.5
-            
-            # Converter para pixels (elipse se spacing x/y for diferente)
             r_px_x = r_slice_mm / self.meta['spacing'][0]
             r_px_y = r_slice_mm / self.meta['spacing'][1]
-            
-            # Desenhar crosshair (centro da esfera projetado)
             self.ax.plot(ci, cj, marker='+', color=color, markersize=10, alpha=alpha)
-            
-            # Desenhar elipse (interseção da esfera com o plano)
             ellipse = Ellipse((ci, cj), width=r_px_x*2, height=r_px_y*2, 
                              fill=False, color=color, linestyle=linestyle, alpha=alpha, linewidth=2)
             self.ax.add_patch(ellipse)
-            
             if label:
                 self.ax.text(ci+2, cj+2, label, color=color, fontweight='bold', fontsize=8)
 
@@ -792,7 +827,7 @@ class ViewerApp:
             fmt_line("Ctrl + G", "ir para serie N"),
             fmt_line("Ctrl + Up/Dn", "navegar paciente"),
             fmt_line("C + num + Enter", "ir para paciente N"),
-            fmt_line("A / K / S", "T2 Axial/Cor/Sag"),
+            fmt_line("A / K / S", "focar painel AX/COR/SAG"),
             "",
             "ROI (LESAO)",
             fmt_line("Clique esq.", "travar centro"),
@@ -813,27 +848,242 @@ class ViewerApp:
         ]
         return "\n".join(lines)
 
-    def update_plot(self):
-        # 1. Limpar eixos
-        self.ax.clear()
-        self.ax_info.clear()
-        self.ax_left.clear()
-        self.ax_info.axis('off')
-        self.ax_left.axis('off')
-        
-        # Resetar artists persistentes pois o ax.clear() os removeu
-        self._persistent_artists = {'line': None, 'ellipse': None, 'text': None}
-        
-        # 2. Desenhar imagem
-        if self.np_vol is not None:
-            slice_img = self.np_vol[self.current_slice, :, :]
+    def _render_mpr_view(self, ax, plane):
+        if ax is None or self.np_vol is None:
+            return
+        sz_k, sz_j, sz_i = self.np_vol.shape
+        i, j, k = self.center_voxel
+        sx, sy, sz = None, None, None
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            try:
+                sx, sy, sz = self.sitk_img.GetSpacing()
+            except Exception:
+                sx, sy, sz = (1.0, 1.0, 1.0)
+        if plane == "axial":
+            slice_index = int(max(0, min(k, sz_k - 1)))
+            slice_img = self.np_vol[slice_index, :, :]
             height, width = slice_img.shape
-            self.ax.imshow(slice_img, cmap='gray', extent=[0, width, height, 0])
-            self.ax.set_xlim(0, width)
-            self.ax.set_ylim(height, 0)
-        self.ax.axis('off') 
-        
-        # 3. HUD (Acima da Imagem)
+            aspect = sy / sx
+        elif plane == "sagittal":
+            slice_index = int(max(0, min(i, sz_i - 1)))
+            slice_img = self.np_vol[:, :, slice_index]
+            height, width = slice_img.shape
+            aspect = sz / sy
+        elif plane == "coronal":
+            slice_index = int(max(0, min(j, sz_j - 1)))
+            slice_img = self.np_vol[:, slice_index, :]
+            height, width = slice_img.shape
+            aspect = sz / sx
+        else:
+            return
+        ax.imshow(slice_img, cmap="gray", interpolation="nearest", origin="upper", aspect=aspect)
+        ax.set_xlim(0, width - 1)
+        ax.set_ylim(height - 1, 0)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_visible(True)
+        self._draw_crosshair(ax, plane)
+        self._draw_rois_on_plane(ax, plane, slice_index)
+        self._draw_gt_on_plane(ax, plane, slice_index)
+
+    def _style_panel(self, ax, plane):
+        if ax is None:
+            return
+        name = "AXIAL" if plane == "axial" else ("SAGITTAL" if plane == "sagittal" else "CORONAL")
+        is_active = (plane == self.active_view)
+        title_color = "yellow" if is_active else "white"
+        ax.set_title(
+            name,
+            fontsize=10,
+            color=title_color,
+            fontfamily="monospace",
+            bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", boxstyle="round,pad=0.3"),
+            loc="center",
+        )
+        for sp in ax.spines.values():
+            sp.set_linewidth(1.5 if is_active else 1.0)
+            sp.set_edgecolor("yellow" if is_active else "#444")
+
+    def _draw_crosshair(self, ax, plane):
+        if self.np_vol is None or self.meta is None:
+            return
+        i, j, k = self.center_voxel
+        if plane == "axial":
+            x = i
+            y = j
+        elif plane == "sagittal":
+            x = j
+            y = k
+        elif plane == "coronal":
+            x = i
+            y = k
+        else:
+            return
+        ax.axvline(x, color="yellow", linestyle="--", linewidth=0.8)
+        ax.axhline(y, color="yellow", linestyle="--", linewidth=0.8)
+
+    def _get_roi_draw_params(self, roi):
+        color = "lime"
+        text_label = roi["id"]
+        pred = self.roi_pred_map.get(roi["id"]) if self.roi_pred_map else None
+        if pred:
+            cat = pred.get("risk_category", "")
+            perc = pred.get("risk_percent", pred.get("prob_pos", 0.0) * 100.0)
+            if cat == "Baixo":
+                color = "lime"
+            elif cat == "Intermediário":
+                color = "yellow"
+            elif cat == "Alto":
+                color = "red"
+            else:
+                color = "cyan"
+            text_label = f"{roi['id']} {perc:.0f}% {cat}"
+        return color, text_label
+
+    def _draw_rois_on_plane(self, ax, plane, slice_index):
+        if self.np_vol is None or self.meta is None:
+            return
+        if not self.rois:
+            return
+        sz_k, sz_j, sz_i = self.np_vol.shape
+        sx, sy, sz = self.meta["spacing"]
+        for roi in self.rois:
+            color, text_label = self._get_roi_draw_params(roi)
+            ci, cj, ck = roi["center_voxel"]
+            r_mm = roi["radius_mm"]
+            if plane == "axial":
+                d_mm = abs((slice_index - ck) * sz)
+                if d_mm > r_mm:
+                    continue
+                r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
+                r_px_x = r2d_mm / sx
+                r_px_y = r2d_mm / sy
+                x = ci
+                y = cj
+            elif plane == "sagittal":
+                d_mm = abs((slice_index - ci) * sx)
+                if d_mm > r_mm:
+                    continue
+                r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
+                r_px_x = r2d_mm / sy
+                r_px_y = r2d_mm / sz
+                x = cj
+                y = ck
+            elif plane == "coronal":
+                d_mm = abs((slice_index - cj) * sy)
+                if d_mm > r_mm:
+                    continue
+                r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
+                r_px_x = r2d_mm / sx
+                r_px_y = r2d_mm / sz
+                x = ci
+                y = ck
+            else:
+                continue
+            ax.plot(x, y, marker="+", color=color, markersize=8, alpha=0.8)
+            ellipse = Ellipse(
+                (x, y),
+                width=r_px_x * 2,
+                height=r_px_y * 2,
+                fill=False,
+                color=color,
+                linestyle="-",
+                alpha=0.8,
+                linewidth=1.5,
+            )
+            ax.add_patch(ellipse)
+            ax.text(x + 2, y + 2, text_label, color=color, fontsize=7)
+
+    def _draw_gt_on_plane(self, ax, plane, slice_index):
+        if not self.show_gt or not self.gt_lesions or self.meta is None or self.np_vol is None:
+            return
+        sz_k, sz_j, sz_i = self.np_vol.shape
+        for idx, lesion in enumerate(self.gt_lesions, 1):
+            x_mm, y_mm, z_mm = lesion["xyz_mm"]
+            vi, vj, vk = dicom_io.mm_to_voxel(x_mm, y_mm, z_mm, self.meta)
+            vi_int = int(round(vi))
+            vj_int = int(round(vj))
+            vk_int = int(round(vk))
+            if not (0 <= vk_int < sz_k and 0 <= vi_int < sz_i and 0 <= vj_int < sz_j):
+                continue
+            if plane == "axial":
+                if vk_int != slice_index:
+                    continue
+                x = vi_int
+                y = vj_int
+            elif plane == "sagittal":
+                if vi_int != slice_index:
+                    continue
+                x = vj_int
+                y = vk_int
+            elif plane == "coronal":
+                if vj_int != slice_index:
+                    continue
+                x = vi_int
+                y = vk_int
+            else:
+                continue
+            lid = lesion.get("lesion_id") or f"L{idx}"
+            label = f"GT {lid}"
+            clinsig = lesion.get("clinsig")
+            zone = lesion.get("zone")
+            extra = []
+            if clinsig is not None:
+                extra.append(f"ClinSig={clinsig}")
+            if zone is not None:
+                extra.append(f"zone={zone}")
+            ggg = lesion.get("ggg")
+            isup = lesion.get("isup")
+            if not extra:
+                if ggg:
+                    extra.append(f"GGG={ggg}")
+                if isup:
+                    extra.append(f"ISUP={isup}")
+            if extra:
+                label += " | " + " | ".join(extra)
+            ax.plot(x, y, marker="x", color="magenta", markersize=8, linewidth=1.5)
+            ax.text(
+                x + 2,
+                y + 2,
+                label,
+                color="magenta",
+                fontsize=7,
+                fontweight="bold",
+            )
+
+    def update_plot(self):
+        if self.fig is None:
+            return
+
+        if self.ax_axial:
+            self.ax_axial.clear()
+        if self.ax_sag:
+            self.ax_sag.clear()
+        if self.ax_cor:
+            self.ax_cor.clear()
+        if self.ax_info:
+            self.ax_info.clear()
+            self.ax_info.axis('off')
+
+        if self.np_vol is not None:
+            sz_k, sz_j, sz_i = self.np_vol.shape
+            i, j, k = self.center_voxel
+            i = int(max(0, min(i, sz_i - 1)))
+            j = int(max(0, min(j, sz_j - 1)))
+            k = int(max(0, min(k, sz_k - 1)))
+            self._set_center_voxel(i, j, k)
+
+            self._render_mpr_view(self.ax_axial, "axial")
+            self._render_mpr_view(self.ax_sag, "sagittal")
+            self._render_mpr_view(self.ax_cor, "coronal")
+            self._style_panel(self.ax_axial, "axial")
+            self._style_panel(self.ax_sag, "sagittal")
+            self._style_panel(self.ax_cor, "coronal")
+
+        # HUD
         case_name = self.cases_list[self.current_case_idx] if self.cases_list else "None"
         
         if self.mode == "SERIES_SELECT":
@@ -845,8 +1095,9 @@ class ViewerApp:
             
         if self.series_list and self.current_series_idx < len(self.series_list):
             s = self.series_list[self.current_series_idx]
+            cv_i, cv_j, cv_k = self.center_voxel
             line1 = f"CASE: {case_name} | SERIES: {s['series_name'][:20]} ({s['orientation'].upper()})"
-            line2 = f"SLICE: {self.current_slice}/{self.max_slice} | R: {self.radius_mm:.1f} mm | MODE: {mode_str}"
+            line2 = f"CENTER (i,j,k)=({cv_i},{cv_j},{cv_k}) | R: {self.radius_mm:.1f} mm | MODE: {mode_str}"
         else:
             line1 = f"CASE: {case_name} | NO SERIES LOADED"
             line2 = f"MODE: {mode_str}"
@@ -856,29 +1107,20 @@ class ViewerApp:
             hud_text += f"\nLAST: {self.last_message}"
         if self.last_key:
             hud_text += f"\nKEY: {self.last_key}"
-
-        self.ax.text(0.01, 1.01, hud_text, transform=self.ax.transAxes, 
-                     verticalalignment='bottom', horizontalalignment='left',
-                     family='monospace', fontsize=8, color='white', fontweight='bold',
-                     bbox=dict(facecolor='black', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.4'))
-
-        # 4. Sidebar Esquerda (Logo + Help)
-        if self.logo_img is not None:
-            # Desenhar logo no topo da sidebar esquerda
-            logo_inset = self.ax_left.inset_axes([0.1, 0.85, 0.8, 0.12])
-            logo_inset.imshow(self.logo_img)
-            logo_inset.axis('off')
-
-        if self.show_help:
-            # Bloco único de help na sidebar esquerda
-            help_txt = self._get_help_text()
-            self.ax_left.text(0.05, 0.82, help_txt, transform=self.ax_left.transAxes,
-                             va="top", ha="left", family='monospace', fontsize=9, color='white',
-                             bbox=dict(facecolor=(0,0,0,0.75), edgecolor="yellow", linewidth=1, boxstyle="round,pad=0.6"))
-        else:
-            self.ax_left.text(0.5, 0.82, "Pressione 'H'\npara ajuda", transform=self.ax_left.transAxes,
-                             va="top", ha="center", fontsize=9, color='gray', family='monospace', 
-                             fontweight='bold')
+        if self.ax_axial:
+            self.ax_axial.text(
+                0.01,
+                1.01,
+                hud_text,
+                transform=self.ax_axial.transAxes,
+                verticalalignment="bottom",
+                horizontalalignment="left",
+                family="monospace",
+                fontsize=8,
+                color="white",
+                fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", boxstyle="round,pad=0.4"),
+            )
 
         if self.toast_artist is not None:
             try:
@@ -902,10 +1144,12 @@ class ViewerApp:
         elif self.toast_message and time.time() >= self.toast_until:
             self.toast_message = None
 
-        # 5. Painel Direito (Cases, Series & ROIs)
+        # Painel Direito (Cases, Series & ROIs)
         total_series_pages = (len(self.series_list) - 1) // self.series_per_page + 1 if self.series_list else 0
         
         info_panel_text = ""
+        if self.show_help:
+            info_panel_text += self._get_help_text() + "\n\n"
         
         # Seção PATIENTS (Sempre mostrar se existirem)
         if self.cases_list:
@@ -1039,76 +1283,7 @@ class ViewerApp:
         self.ax_info.text(0.05, 0.98, info_panel_text, transform=self.ax_info.transAxes,
                          verticalalignment='top', family='monospace', fontsize=8)
 
-        # 6. Desenhar ROIs confirmadas (Renderização 3D Tri-planar)
-        for roi in self.rois:
-            color = "lime"
-            text_label = roi["id"]
-            pred = self.roi_pred_map.get(roi["id"]) if self.roi_pred_map else None
-            if pred:
-                cat = pred.get("risk_category", "")
-                perc = pred.get("risk_percent", pred.get("prob_pos", 0.0) * 100.0)
-                if cat == "Baixo":
-                    color = "lime"
-                elif cat == "Intermediário":
-                    color = "yellow"
-                elif cat == "Alto":
-                    color = "red"
-                else:
-                    color = "cyan"
-                text_label = f"{roi['id']} {perc:.0f}% {cat}"
-            self._draw_roi_sphere(
-                roi['center_voxel'],
-                roi['radius_mm'],
-                color=color,
-                label=text_label,
-                linestyle='-',
-                alpha=0.8,
-                roi_mm=roi['center_mm'],
-            )
-
-        if self.show_gt and self.gt_lesions and self.meta is not None and self.np_vol is not None:
-            sz_k, sz_j, sz_i = self.np_vol.shape
-            for idx, lesion in enumerate(self.gt_lesions, 1):
-                x, y, z = lesion["xyz_mm"]
-                vi, vj, vk = dicom_io.mm_to_voxel(x, y, z, self.meta)
-                vi_int = int(round(vi))
-                vj_int = int(round(vj))
-                vk_int = int(round(vk))
-                if not (0 <= vk_int < sz_k and 0 <= vi_int < sz_i and 0 <= vj_int < sz_j):
-                    continue
-                if vk_int != self.current_slice:
-                    continue
-                lid = lesion.get("lesion_id") or f"L{idx}"
-                label = f"GT {lid}"
-                clinsig = lesion.get("clinsig")
-                zone = lesion.get("zone")
-                extra = []
-                if clinsig is not None:
-                    extra.append(f"ClinSig={clinsig}")
-                if zone is not None:
-                    extra.append(f"zone={zone}")
-                ggg = lesion.get("ggg")
-                isup = lesion.get("isup")
-                if not extra:
-                    if ggg:
-                        extra.append(f"GGG={ggg}")
-                    if isup:
-                        extra.append(f"ISUP={isup}")
-                if extra:
-                    label += " | " + " | ".join(extra)
-                self.ax.plot(vi_int, vj_int, marker="x", color="magenta", markersize=10, linewidth=2)
-                self.ax.text(
-                    vi_int + 2,
-                    vj_int + 2,
-                    label,
-                    color="magenta",
-                    fontsize=8,
-                    fontweight="bold",
-                )
-
         self.fig.canvas.draw_idle()
-        if self.background:
-            self._draw_preview_fast()
 
     def _toggle_gt(self):
         if not self.cases_list or self.current_case_idx < 0:
@@ -1141,44 +1316,80 @@ class ViewerApp:
             return
         x, y, z = best[1]["xyz_mm"]
         vi, vj, vk = dicom_io.mm_to_voxel(x, y, z, self.meta)
-        k_int = int(round(vk))
-        if k_int < 0 or k_int > self.max_slice:
-            return
-        self.current_slice = k_int
-        self.last_message = "Pulando para slice GT"
+        i = int(round(vi))
+        j = int(round(vj))
+        k = int(round(vk))
+        self._set_center_voxel(i, j, k)
+        self.last_message = "Pulando para GT mais proxima"
         self.update_plot()
 
     def on_mouse_move(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
             return
-        if event.inaxes != self.ax:
+        if event.inaxes is None:
             return
-        if event.xdata is None or event.ydata is None:
+        if event.inaxes == self.ax_axial:
+            plane = "axial"
+        elif event.inaxes == self.ax_sag:
+            plane = "sagittal"
+        elif event.inaxes == self.ax_cor:
+            plane = "coronal"
+        else:
             return
-        
-        self.mouse_pos = (event.xdata, event.ydata)
-        
-        if not self.is_locked:
-            self._draw_preview_fast()
+        if plane != self.active_view:
+            self.active_view = plane
+            if self.fig:
+                self.update_plot()
 
     def on_scroll(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
             return
-        if event.button == 'up':
-            self.current_slice = min(self.current_slice + 1, self.max_slice)
-        elif event.button == 'down':
-            self.current_slice = max(self.current_slice - 1, 0)
+        if self.np_vol is None:
+            return
+        if event.button == "up":
+            delta = 1
+        elif event.button == "down":
+            delta = -1
+        else:
+            return
+        plane = self.active_view
+        if event.inaxes == self.ax_axial:
+            plane = "axial"
+        elif event.inaxes == self.ax_sag:
+            plane = "sagittal"
+        elif event.inaxes == self.ax_cor:
+            plane = "coronal"
+        self._move_center_slice(plane, delta)
         self.update_plot()
 
     def on_click(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
             return
-        if event.inaxes != self.ax or event.button != 1:
+        if event.button != 1:
             return
         if event.xdata is None or event.ydata is None:
             return
-            
-        self.candidate_center = [event.xdata, event.ydata, self.current_slice]
+        if event.inaxes == self.ax_axial:
+            plane = "axial"
+        elif event.inaxes == self.ax_sag:
+            plane = "sagittal"
+        elif event.inaxes == self.ax_cor:
+            plane = "coronal"
+        else:
+            return
+        self.active_view = plane
+        i, j, k = self.center_voxel
+        if plane == "axial":
+            i = int(round(event.xdata))
+            j = int(round(event.ydata))
+        elif plane == "sagittal":
+            j = int(round(event.xdata))
+            k = int(round(event.ydata))
+        elif plane == "coronal":
+            i = int(round(event.xdata))
+            k = int(round(event.ydata))
+        self._set_center_voxel(i, j, k)
+        self.candidate_center = [i, j, k]
         self.is_locked = True
         self.last_message = "Centro travado. Pressione Enter para confirmar."
         self.update_plot()
@@ -1194,22 +1405,11 @@ class ViewerApp:
             is_ctrl = event.key.startswith('ctrl+')
 
             if self.mode == "NORMAL" and not is_ctrl and event.key in ['a', 'k', 's']:
-                target = None
-                if event.key == 'a':
-                    target = 'axial'
-                elif event.key == 'k':
-                    target = 'coronal'
-                elif event.key == 's':
-                    target = 'sagittal'
+                mapping = {'a': 'axial', 'k': 'coronal', 's': 'sagittal'}
+                target = mapping.get(event.key)
                 if target:
-                    if self.t2_quick[target] is not None:
-                        last_center_mm = self.rois[-1]['center_mm'] if self.rois else None
-                        self.current_series_idx = self.t2_quick[target]
-                        self.load_current_series(center_mm=last_center_mm)
-                        self.series_page = self.current_series_idx // self.series_per_page
-                        self.last_message = f"Trocado para T2 {target.upper()}"
-                    else:
-                        self.last_message = f"T2 {target.upper()} nao disponivel neste case."
+                    self.active_view = target
+                    self.last_message = f"Painel ativo: {target.upper()}"
                     self.update_plot()
                     return
 
@@ -1304,10 +1504,10 @@ class ViewerApp:
             elif event.key == 'ctrl+down':
                 self.next_patient(1)
             elif event.key in ['up', 'right']:
-                self.current_slice = min(self.current_slice + 1, self.max_slice)
+                self._move_center_slice(self.active_view, 1)
                 self.update_plot()
             elif event.key in ['down', 'left']:
-                self.current_slice = max(self.current_slice - 1, 0)
+                self._move_center_slice(self.active_view, -1)
                 self.update_plot()
             elif event.key in ['+', '=']:
                 self.radius_mm += 0.5
