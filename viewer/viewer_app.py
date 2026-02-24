@@ -153,6 +153,7 @@ class ViewerApp:
         self.ax_sag = None
         self.ax_cor = None
         self.ax_info = None
+        self.ax_sidebar = None
         self.ax = None
         
         # Export Info
@@ -663,18 +664,25 @@ class ViewerApp:
         plt.rcParams['keymap.quit'] = ''
 
         self.fig = plt.figure(figsize=(16, 10))
-        gs = self.fig.add_gridspec(2, 3, width_ratios=[1.15, 1.15, 0.70], height_ratios=[1.05, 1.00])
-        
-        self.ax_axial = self.fig.add_subplot(gs[0, 0])
-        self.ax_sag = self.fig.add_subplot(gs[0, 1])
-        self.ax_cor = self.fig.add_subplot(gs[1, 0:2])
-        self.ax_info = self.fig.add_subplot(gs[:, 2])
+        self.fig.patch.set_facecolor("#222222")
+        gs = self.fig.add_gridspec(2, 3, width_ratios=[1.0, 1.6, 1.6], height_ratios=[1.0, 1.0])
+
+        self.ax_sidebar = self.fig.add_subplot(gs[:, 0])
+        self.ax_axial = self.fig.add_subplot(gs[0, 1])
+        self.ax_info = self.fig.add_subplot(gs[0, 2])
+        self.ax_cor = self.fig.add_subplot(gs[1, 1])
+        self.ax_sag = self.fig.add_subplot(gs[1, 2])
         self.ax = self.ax_axial
-        
-        self.ax_axial.axis('off')
-        self.ax_sag.axis('off')
-        self.ax_cor.axis('off')
-        self.ax_info.axis('off')
+
+        if self.ax_sidebar:
+            self.ax_sidebar.set_facecolor("#303030")
+            self.ax_sidebar.axis('off')
+        if self.ax_info:
+            self.ax_info.set_facecolor("#202020")
+            self.ax_info.axis('off')
+        for ax in [self.ax_axial, self.ax_cor, self.ax_sag]:
+            if ax:
+                ax.set_facecolor("black")
 
         # Desativar toolbar para evitar pan/zoom acidental
         self.fig.canvas.toolbar.pack_forget()
@@ -907,22 +915,43 @@ class ViewerApp:
         is_active = (plane == self.active_view)
         title_color = "yellow" if is_active else "white"
         if plane == "axial":
-            base_color = "#d32f2f"
+            base_color = "#d84a4a"
         elif plane == "sagittal":
-            base_color = "#fbc02d"
+            base_color = "#f1c40f"
         else:
-            base_color = "#388e3c"
+            base_color = "#4caf50"
+        label = name
+        if self.np_vol is not None:
+            sz_k, sz_j, sz_i = self.np_vol.shape
+            i, j, k = self.center_voxel
+            if plane == "axial":
+                pos = int(max(0, min(k, sz_k - 1))) + 1
+                total = sz_k
+                label = f"{name} k={pos}/{total}"
+            elif plane == "coronal":
+                pos = int(max(0, min(j, sz_j - 1))) + 1
+                total = sz_j
+                label = f"{name} j={pos}/{total}"
+            else:
+                pos = int(max(0, min(i, sz_i - 1))) + 1
+                total = sz_i
+                label = f"{name} i={pos}/{total}"
+        else:
+            label = f"{name} [NO DATA]"
         ax.set_title(
-            name,
+            label,
             fontsize=10,
             color=title_color,
             fontfamily="monospace",
-            bbox=dict(facecolor=base_color, alpha=0.85, edgecolor="none", boxstyle="round,pad=0.3"),
+            bbox=dict(facecolor=base_color, alpha=0.9, edgecolor="none", boxstyle="round,pad=0.3"),
             loc="center",
         )
-        for sp in ax.spines.values():
+        for side, sp in ax.spines.items():
             sp.set_linewidth(1.5 if is_active else 1.0)
-            sp.set_edgecolor("yellow" if is_active else "#444")
+            if side == "top":
+                sp.set_edgecolor(base_color)
+            else:
+                sp.set_edgecolor("yellow" if is_active else "#444")
 
     def _draw_crosshair(self, ax, plane):
         if self.np_vol is None or self.meta is None:
@@ -1088,16 +1117,29 @@ class ViewerApp:
     def update_plot(self):
         if self.fig is None:
             return
-
         if self.ax_axial:
             self.ax_axial.clear()
+            self.ax_axial.set_facecolor("black")
+            self.ax_axial.set_xticks([])
+            self.ax_axial.set_yticks([])
         if self.ax_sag:
             self.ax_sag.clear()
+            self.ax_sag.set_facecolor("black")
+            self.ax_sag.set_xticks([])
+            self.ax_sag.set_yticks([])
         if self.ax_cor:
             self.ax_cor.clear()
+            self.ax_cor.set_facecolor("black")
+            self.ax_cor.set_xticks([])
+            self.ax_cor.set_yticks([])
         if self.ax_info:
             self.ax_info.clear()
+            self.ax_info.set_facecolor("#202020")
             self.ax_info.axis('off')
+        if hasattr(self, "ax_sidebar") and self.ax_sidebar:
+            self.ax_sidebar.clear()
+            self.ax_sidebar.set_facecolor("#303030")
+            self.ax_sidebar.axis('off')
 
         if self.np_vol is not None:
             sz_k, sz_j, sz_i = self.np_vol.shape
@@ -1106,24 +1148,21 @@ class ViewerApp:
             j = int(max(0, min(j, sz_j - 1)))
             k = int(max(0, min(k, sz_k - 1)))
             self._set_center_voxel(i, j, k)
-
             self._render_mpr_view(self.ax_axial, "axial")
             self._render_mpr_view(self.ax_sag, "sagittal")
             self._render_mpr_view(self.ax_cor, "coronal")
-            self._style_panel(self.ax_axial, "axial")
-            self._style_panel(self.ax_sag, "sagittal")
-            self._style_panel(self.ax_cor, "coronal")
 
-        # HUD
+        self._style_panel(self.ax_axial, "axial")
+        self._style_panel(self.ax_sag, "sagittal")
+        self._style_panel(self.ax_cor, "coronal")
+
         case_name = self.cases_list[self.current_case_idx] if self.cases_list else "None"
-        
         if self.mode == "SERIES_SELECT":
             mode_str = f"GO TO SERIES: {self.series_input_str}_ (Enter confirm, Esc cancel)"
         elif self.mode == "CASE_SELECT":
             mode_str = f"GO TO PATIENT: {self.case_input_str}_ (Enter confirm, Esc cancel)"
         else:
             mode_str = "LOCKED" if self.is_locked else "PREVIEW"
-            
         if self.series_list and self.current_series_idx < len(self.series_list):
             s = self.series_list[self.current_series_idx]
             cv_i, cv_j, cv_k = self.center_voxel
@@ -1132,7 +1171,6 @@ class ViewerApp:
         else:
             line1 = f"CASE: {case_name} | NO SERIES LOADED"
             line2 = f"MODE: {mode_str}"
-        
         hud_text = f"{line1}\n{line2}"
         if self.last_message:
             hud_text += f"\nLAST: {self.last_message}"
@@ -1175,24 +1213,16 @@ class ViewerApp:
         elif self.toast_message and time.time() >= self.toast_until:
             self.toast_message = None
 
-        # Painel Direito (Cases, Series & ROIs)
         total_series_pages = (len(self.series_list) - 1) // self.series_per_page + 1 if self.series_list else 0
-        
-        info_panel_text = ""
-        if self.show_help:
-            info_panel_text += self._get_help_text() + "\n\n"
-        
-        # Seção PATIENTS (Sempre mostrar se existirem)
+        sidebar_text = ""
         if self.cases_list:
-            info_panel_text += "=== PATIENTS ===\n"
+            sidebar_text += "=== PATIENTS ===\n"
             for i, c in enumerate(self.cases_list):
                 mark = ">" if i == self.current_case_idx else " "
-                info_panel_text += f"{mark}[{i+1}] {c[:15]}\n"
-            info_panel_text += "\n"
-
-        # Seção T2 QUICK
+                sidebar_text += f"{mark}[{i+1}] {c[:15]}\n"
+            sidebar_text += "\n"
         if self.series_list:
-            info_panel_text += "=== T2 QUICK ===\n"
+            sidebar_text += "=== T2 QUICK ===\n"
             for orient in ['axial', 'coronal', 'sagittal']:
                 idx = self.t2_quick[orient]
                 mark = ">" if idx == self.current_series_idx and idx is not None else " "
@@ -1200,39 +1230,72 @@ class ViewerApp:
                 key = key_map[orient]
                 if idx is not None:
                     name = self.series_list[idx]['series_name'][:12]
-                    info_panel_text += f"{mark}({key}) {orient[:3].upper()}: {name}\n"
+                    sidebar_text += f"{mark}({key}) {orient[:3].upper()}: {name}\n"
                 else:
-                    info_panel_text += f"   ({key}) {orient[:3].upper()}: -\n"
-            info_panel_text += "\n"
-
-            # Seção SERIES
-            info_panel_text += f"=== SERIES ({self.series_page+1}/{total_series_pages}) ===\n"
+                    sidebar_text += f"   ({key}) {orient[:3].upper()}: -\n"
+            sidebar_text += "\n"
+            sidebar_text += f"=== SERIES ({self.series_page+1}/{total_series_pages}) ===\n"
             start_idx = self.series_page * self.series_per_page
             end_idx = min(start_idx + self.series_per_page, len(self.series_list))
-            
             for i in range(start_idx, end_idx):
                 ser = self.series_list[i]
                 mark = ">" if i == self.current_series_idx else " "
-                info_panel_text += f"{mark}[{i+1}] {ser['series_name'][:12]} ({ser['orientation'][0].upper()})\n"
-            
-            info_panel_text += "\nUse [ ] to page\n"
-        
-        # Seção ROIs
-        info_panel_text += "\n=== ROIs ===\n"
+                sidebar_text += f"{mark}[{i+1}] {ser['series_name'][:12]} ({ser['orientation'][0].upper()})\n"
+            sidebar_text += "\nUse [ ] to page\n"
+        sidebar_text += "\n=== ROIs ===\n"
         if not self.rois:
-            info_panel_text += "Nenhuma ROI.\n"
+            sidebar_text += "Nenhuma ROI.\n"
         else:
             for roi in self.rois:
                 lid = roi["id"]
                 status = self.roi_status.get(lid, "??")
-                info_panel_text += (
+                sidebar_text += (
                     f"{lid} | S:{roi['center_voxel'][2]} | R:{roi['radius_mm']:.1f} | {status}\n"
                     f"  Pos:({roi['center_voxel'][0]},{roi['center_voxel'][1]})\n"
                 )
-
+        sidebar_text += "\n=== PREDICOES ===\n"
+        if self.show_predictions_panel and self.last_preds:
+            for p in self.last_preds:
+                lesion = p.get("lesion", "?")
+                perc = p.get("risk_percent", p.get("prob_pos", 0.0) * 100.0)
+                cat = p.get("risk_category", "")
+                label = p.get("pred_label", "")
+                sidebar_text += f"{lesion}: {perc:.0f}% ({cat}) -> {label}\n"
+        else:
+            sidebar_text += "Nenhuma.\n"
+        sidebar_text += "\n=== GT ===\n"
         if self.show_gt:
-            info_panel_text += "\n=== GABARITO (GT) ===\n"
-            info_panel_text += f"case_name={self.cases_list[self.current_case_idx]}\n"
+            sidebar_text += f"ON ({len(self.gt_lesions)} lesoes)\n"
+        else:
+            sidebar_text += "OFF\n"
+        if self.show_help:
+            sidebar_text += "\n" + self._get_help_text()
+        if hasattr(self, "ax_sidebar") and self.ax_sidebar:
+            self.ax_sidebar.text(
+                0.02,
+                0.98,
+                sidebar_text,
+                transform=self.ax_sidebar.transAxes,
+                verticalalignment="top",
+                family="monospace",
+                fontsize=8,
+                color="white",
+            )
+
+        info_panel_text = ""
+        if self.series_list and self.current_series_idx < len(self.series_list):
+            s = self.series_list[self.current_series_idx]
+            info_panel_text += f"CASE: {case_name}\n"
+            info_panel_text += f"SERIES: {s['series_name']} ({s['orientation'].upper()})\n"
+        else:
+            info_panel_text += f"CASE: {case_name}\nNO SERIES LOADED\n"
+        info_panel_text += f"ROIs: {len(self.rois)}\n"
+        if self.show_predictions_panel and self.last_preds:
+            info_panel_text += f"PREDICOES: {len(self.last_preds)}\n"
+        if self.show_gt:
+            info_panel_text += f"GT lesions: {len(self.gt_lesions)}\n"
+        if self.show_gt:
+            info_panel_text += "\nGT DETAIL:\n"
             info_panel_text += f"patient_id_resolved={self.gt_patient_id or 'None'}\n"
             info_panel_text += f"labels_source={self.gt_label_source or 'None'}\n"
             if not self.gt_lesions:
@@ -1258,34 +1321,14 @@ class ViewerApp:
                         any_proj = True
                     else:
                         any_oob = True
-                    ggg = lesion.get("ggg")
-                    isup = lesion.get("isup")
-                    clinsig = lesion.get("clinsig")
-                    zone = lesion.get("zone")
                     lid = lesion.get("lesion_id") or f"L{idx}"
-                    src = lesion.get("source")
-                    parts = [f"{lid}:"]
-                    if ggg or isup:
-                        parts.append(f"GGG={ggg or '-'} ISUP={isup or '-'}")
-                    if clinsig is not None:
-                        parts.append(f"ClinSig={clinsig}")
-                    if zone is not None:
-                        parts.append(f"zone={zone}")
-                    parts.append(f"xyz=({x:.1f},{y:.1f},{z:.1f})")
-                    parts.append(f"voxel=({vi_int},{vj_int},{vk_int})")
-                    parts.append(f"slice={vk_int}")
-                    parts.append(f"in_bounds={str(in_bounds).lower()}")
-                    line = " | ".join(parts)
-                    if src:
-                        line += f" | source={src}"
-                    info_panel_text += line + "\n"
+                    info_panel_text += f"{lid}: voxel=({vi_int},{vj_int},{vk_int}) slice={vk_int} in_bounds={str(in_bounds).lower()}\n"
                 if not any_proj:
                     info_panel_text += "GT coords nao projetaveis\n"
                 if any_oob:
-                    info_panel_text += "GT fora do volume desta serie (possivel mismatch: labels referem outra serie/orientacao).\n"
-
+                    info_panel_text += "GT fora do volume desta serie.\n"
         if self.show_gt and self.rois and self.gt_lesions:
-            info_panel_text += "\n=== ROI vs GT ===\n"
+            info_panel_text += "\nROI vs GT:\n"
             for roi in self.rois:
                 best = None
                 for lesion in self.gt_lesions:
@@ -1298,21 +1341,29 @@ class ViewerApp:
                     if best is None or dist < best[0]:
                         best = (dist, lesion)
                 if best is not None:
-                    dist_mm, lesion = best
+                    dist_mm, _ = best
                     status = "PERTO" if dist_mm <= self.gt_threshold_mm else "LONGE"
                     info_panel_text += f"{roi['id']} -> {dist_mm:.1f} mm ({status})\n"
-
-        if self.show_predictions_panel and self.last_preds:
-            info_panel_text += "\n=== PREDIÇÕES ===\n"
-            for p in self.last_preds:
-                lesion = p.get("lesion", "?")
-                perc = p.get("risk_percent", p.get("prob_pos", 0.0) * 100.0)
-                cat = p.get("risk_category", "")
-                label = p.get("pred_label", "")
-                info_panel_text += f"{lesion}: {perc:.0f}% ({cat}) -> {label}\n"
-        
-        self.ax_info.text(0.05, 0.98, info_panel_text, transform=self.ax_info.transAxes,
-                         verticalalignment='top', family='monospace', fontsize=8)
+        status_flags = []
+        if self.last_export_dir:
+            status_flags.append("Export OK")
+        if self.last_preds:
+            status_flags.append("Model OK")
+        if self.show_gt and self.gt_lesions:
+            status_flags.append("GT OK")
+        if status_flags:
+            info_panel_text += "\nStatus: " + ", ".join(status_flags) + "\n"
+        if self.ax_info:
+            self.ax_info.text(
+                0.05,
+                0.95,
+                info_panel_text,
+                transform=self.ax_info.transAxes,
+                verticalalignment='top',
+                family='monospace',
+                fontsize=8,
+                color="white",
+            )
 
         self.fig.canvas.draw_idle()
 
