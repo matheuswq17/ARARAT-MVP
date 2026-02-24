@@ -114,6 +114,7 @@ class ViewerApp:
         self.center_voxel = [0, 0, 0]
         self.center_mm = None
         self.active_view = "axial"
+        self.main_view = "axial"
         self.crop_mode = "CROP"
         self.crop_mm = {
             "axial": (180.0, 180.0),
@@ -135,8 +136,11 @@ class ViewerApp:
                 "zoom": 1.0,
                 "pan": (0.0, 0.0),
             }
-        self.dev_layout_debug = False
+        self.dev_layout_debug = True
         self._last_view_limits = {p: None for p in ["axial", "coronal", "sagittal"]}
+        self.slot_main = [0.27, 0.55, 0.50, 0.40]
+        self.slot_bl = [0.27, 0.05, 0.24, 0.40]
+        self.slot_br = [0.53, 0.05, 0.24, 0.40]
         
         # ROI Candidata (Preview)
         self.candidate_center = None # (i, j, k) - None se seguindo mouse
@@ -704,23 +708,11 @@ class ViewerApp:
 
         self.fig = plt.figure(figsize=(16, 10))
         self.fig.patch.set_facecolor("#222222")
-        outer = self.fig.add_gridspec(
-            2,
-            3,
-            width_ratios=[0.22, 0.58, 0.20],
-            height_ratios=[0.55, 0.45],
-        )
-        self.ax_sidebar = self.fig.add_subplot(outer[:, 0])
-        self.ax_info = self.fig.add_subplot(outer[0, 2])
-        g_main = outer[:, 1].subgridspec(
-            2,
-            2,
-            height_ratios=[0.55, 0.45],
-            width_ratios=[1.0, 1.0],
-        )
-        self.ax_axial = self.fig.add_subplot(g_main[0, :])
-        self.ax_cor = self.fig.add_subplot(g_main[1, 0])
-        self.ax_sag = self.fig.add_subplot(g_main[1, 1])
+        self.ax_sidebar = self.fig.add_axes([0.03, 0.05, 0.22, 0.90])
+        self.ax_info = self.fig.add_axes([0.80, 0.05, 0.17, 0.90])
+        self.ax_axial = self.fig.add_axes(self.slot_main)
+        self.ax_cor = self.fig.add_axes(self.slot_bl)
+        self.ax_sag = self.fig.add_axes(self.slot_br)
         self.ax = self.ax_axial
 
         if self.ax_sidebar:
@@ -754,6 +746,7 @@ class ViewerApp:
             except Exception as e:
                 print(f"[WARNING] Nao foi possivel definir o icone da janela: {e}")
 
+        self._apply_slots()
         self.update_plot()
         
         # conectar eventos
@@ -763,13 +756,15 @@ class ViewerApp:
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.fig.canvas.mpl_connect('draw_event', self.on_draw)
-        
-        plt.subplots_adjust(top=0.95, bottom=0.05, left=0.03, right=0.98, wspace=0.03, hspace=0.10)
+        self.fig.canvas.mpl_connect('resize_event', self.on_resize)
         
         plt.show()
 
     def on_draw(self, event):
         return
+
+    def on_resize(self, event):
+        self._apply_slots()
 
     def on_button_release(self, event):
         if self._pan_drag["active"]:
@@ -972,7 +967,7 @@ class ViewerApp:
             fmt_line("Ctrl + G", "ir para serie N"),
             fmt_line("Ctrl + Up/Dn", "navegar paciente"),
             fmt_line("C + num + Enter", "ir para paciente N"),
-            fmt_line("A / K / S", "focar painel AX/COR/SAG"),
+            fmt_line("A / K / S", "alternar painel principal AX/COR/SAG"),
             "",
             "ROI (LESAO)",
             fmt_line("Clique esq.", "travar centro"),
@@ -1049,13 +1044,11 @@ class ViewerApp:
             cmap="gray",
             origin="upper",
             extent=extent,
-            aspect="equal",
             interpolation="bicubic",
             vmin=vmin,
             vmax=vmax,
         )
         ax.set_autoscale_on(False)
-        ax.set_aspect("equal", adjustable="box")
         if state is None:
             mode = "FULL"
             xlim, ylim = (0.0, max_x), (max_y, 0.0)
@@ -1082,6 +1075,8 @@ class ViewerApp:
         if xlim is not None and ylim is not None:
             ax.set_xlim(xlim[0], xlim[1])
             ax.set_ylim(ylim[0], ylim[1])
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_anchor("C")
         ax.set_xticks([])
         ax.set_yticks([])
         for sp in ax.spines.values():
@@ -1114,6 +1109,105 @@ class ViewerApp:
         self._draw_crosshair(ax, plane)
         self._draw_rois_on_plane(ax, plane, slice_index)
         self._draw_gt_on_plane(ax, plane, slice_index)
+        if self.fig:
+            w_px, h_px = self._get_axes_px(ax)
+            if w_px and h_px:
+                if ax is self.ax_axial:
+                    slot_name = "MAIN"
+                elif ax is self.ax_cor:
+                    slot_name = "BL"
+                elif ax is self.ax_sag:
+                    slot_name = "BR"
+                else:
+                    slot_name = ""
+                if slot_name:
+                    txt = f"{slot_name} {w_px}x{h_px}"
+                    ax.text(
+                        0.02,
+                        0.90,
+                        txt,
+                        transform=ax.transAxes,
+                        fontsize=8,
+                        color="#bbbbbb",
+                        verticalalignment="top",
+                        horizontalalignment="left",
+                        family="monospace",
+                        alpha=0.9,
+                    )
+        if ax is self.ax_axial:
+            ax.set_position(self.slot_main)
+        elif ax is self.ax_cor:
+            ax.set_position(self.slot_bl)
+        elif ax is self.ax_sag:
+            ax.set_position(self.slot_br)
+
+    def _get_layout_assignment(self):
+        mv = self.main_view or "axial"
+        if mv == "coronal":
+            return {
+                "main": "coronal",
+                "bottom_left": "axial",
+                "bottom_right": "sagittal",
+            }
+        if mv == "sagittal":
+            return {
+                "main": "sagittal",
+                "bottom_left": "axial",
+                "bottom_right": "coronal",
+            }
+        return {
+            "main": "axial",
+            "bottom_left": "coronal",
+            "bottom_right": "sagittal",
+        }
+
+    def _plane_for_axes(self, ax):
+        if ax is None:
+            return None
+        slots = self._get_layout_assignment()
+        if ax is self.ax_axial:
+            return slots["main"]
+        if ax is self.ax_cor:
+            return slots["bottom_left"]
+        if ax is self.ax_sag:
+            return slots["bottom_right"]
+        return None
+
+    def _apply_slots(self):
+        if self.ax_axial:
+            self.ax_axial.set_position(self.slot_main)
+        if self.ax_cor:
+            self.ax_cor.set_position(self.slot_bl)
+        if self.ax_sag:
+            self.ax_sag.set_position(self.slot_br)
+
+    def _get_axes_px(self, ax):
+        if not self.fig or ax is None:
+            return 0, 0
+        try:
+            bbox = ax.get_window_extent().transformed(self.fig.dpi_scale_trans.inverted())
+            w_px = int(round(bbox.width * self.fig.dpi))
+            h_px = int(round(bbox.height * self.fig.dpi))
+            return w_px, h_px
+        except Exception:
+            return 0, 0
+
+    def _debug_slot_sizes(self):
+        if not self.fig:
+            return
+        slots = [("MAIN", self.ax_axial), ("BL", self.ax_cor), ("BR", self.ax_sag)]
+        measures = []
+        for name, ax in slots:
+            if ax is None:
+                measures.append(f"{name}=None")
+                continue
+            w_px, h_px = self._get_axes_px(ax)
+            if w_px and h_px:
+                measures.append(f"{name}={w_px}x{h_px}")
+            else:
+                measures.append(f"{name}=?x?")
+        if measures:
+            print("[SLOTS]", " | ".join(measures))
 
     def _style_panel(self, ax, plane):
         if ax is None:
@@ -1328,6 +1422,7 @@ class ViewerApp:
     def update_plot(self):
         if self.fig is None:
             return
+        self._apply_slots()
         if self.ax_axial:
             self.ax_axial.clear()
             self.ax_axial.set_facecolor("black")
@@ -1359,13 +1454,15 @@ class ViewerApp:
             j = int(max(0, min(j, sz_j - 1)))
             k = int(max(0, min(k, sz_k - 1)))
             self._set_center_voxel(i, j, k)
-            self._render_mpr_view(self.ax_axial, "axial")
-            self._render_mpr_view(self.ax_sag, "sagittal")
-            self._render_mpr_view(self.ax_cor, "coronal")
+            layout = self._get_layout_assignment()
+            self._render_mpr_view(self.ax_axial, layout["main"])
+            self._render_mpr_view(self.ax_cor, layout["bottom_left"])
+            self._render_mpr_view(self.ax_sag, layout["bottom_right"])
 
-        self._style_panel(self.ax_axial, "axial")
-        self._style_panel(self.ax_sag, "sagittal")
-        self._style_panel(self.ax_cor, "coronal")
+        layout = self._get_layout_assignment()
+        self._style_panel(self.ax_axial, layout["main"])
+        self._style_panel(self.ax_cor, layout["bottom_left"])
+        self._style_panel(self.ax_sag, layout["bottom_right"])
 
         case_name = self.cases_list[self.current_case_idx] if self.cases_list else "None"
         if self.mode == "SERIES_SELECT":
@@ -1401,6 +1498,9 @@ class ViewerApp:
                 fontweight="bold",
                 bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", boxstyle="round,pad=0.4"),
             )
+
+        if self.dev_layout_debug:
+            self._debug_slot_sizes()
 
         if self.toast_artist is not None:
             try:
@@ -1621,13 +1721,8 @@ class ViewerApp:
             return
         if event.inaxes is None:
             return
-        if event.inaxes == self.ax_axial:
-            plane = "axial"
-        elif event.inaxes == self.ax_sag:
-            plane = "sagittal"
-        elif event.inaxes == self.ax_cor:
-            plane = "coronal"
-        else:
+        plane = self._plane_for_axes(event.inaxes)
+        if plane is None:
             return
         if plane != self.active_view:
             self.active_view = plane
@@ -1684,13 +1779,9 @@ class ViewerApp:
             return
         if self.np_vol is None:
             return
-        plane = self.active_view
-        if event.inaxes == self.ax_axial:
-            plane = "axial"
-        elif event.inaxes == self.ax_sag:
-            plane = "sagittal"
-        elif event.inaxes == self.ax_cor:
-            plane = "coronal"
+        plane = self._plane_for_axes(event.inaxes)
+        if plane is None:
+            return
         is_ctrl = getattr(event, "key", None) in ("control", "ctrl", "ctrl+control")
         if is_ctrl:
             if event.button == "up":
@@ -1736,13 +1827,8 @@ class ViewerApp:
                 sx, sy, sz = self.sitk_img.GetSpacing()
             except Exception:
                 sx, sy, sz = (1.0, 1.0, 1.0)
-        if event.inaxes == self.ax_axial:
-            plane = "axial"
-        elif event.inaxes == self.ax_sag:
-            plane = "sagittal"
-        elif event.inaxes == self.ax_cor:
-            plane = "coronal"
-        else:
+        plane = self._plane_for_axes(event.inaxes)
+        if plane is None:
             return
         self.active_view = plane
         if event.dblclick and event.button == 1:
@@ -1810,8 +1896,9 @@ class ViewerApp:
                 mapping = {'a': 'axial', 'k': 'coronal', 's': 'sagittal'}
                 target = mapping.get(event.key)
                 if target:
+                    self.main_view = target
                     self.active_view = target
-                    self.last_message = f"Painel ativo: {target.upper()}"
+                    self.last_message = f"Painel principal: {target.upper()}"
                     self.update_plot()
                     return
 
