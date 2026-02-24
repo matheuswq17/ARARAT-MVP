@@ -704,18 +704,23 @@ class ViewerApp:
 
         self.fig = plt.figure(figsize=(16, 10))
         self.fig.patch.set_facecolor("#222222")
-        gs = self.fig.add_gridspec(
+        outer = self.fig.add_gridspec(
             2,
             3,
             width_ratios=[0.22, 0.58, 0.20],
             height_ratios=[0.55, 0.45],
         )
-
-        self.ax_sidebar = self.fig.add_subplot(gs[:, 0])
-        self.ax_axial = self.fig.add_subplot(gs[0, 1])
-        self.ax_info = self.fig.add_subplot(gs[0, 2])
-        self.ax_cor = self.fig.add_subplot(gs[1, 1])
-        self.ax_sag = self.fig.add_subplot(gs[1, 2])
+        self.ax_sidebar = self.fig.add_subplot(outer[:, 0])
+        self.ax_info = self.fig.add_subplot(outer[0, 2])
+        g_main = outer[:, 1].subgridspec(
+            2,
+            2,
+            height_ratios=[0.55, 0.45],
+            width_ratios=[1.0, 1.0],
+        )
+        self.ax_axial = self.fig.add_subplot(g_main[0, :])
+        self.ax_cor = self.fig.add_subplot(g_main[1, 0])
+        self.ax_sag = self.fig.add_subplot(g_main[1, 1])
         self.ax = self.ax_axial
 
         if self.ax_sidebar:
