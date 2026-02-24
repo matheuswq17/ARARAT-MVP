@@ -76,3 +76,5 @@ timestamp,case,plane,series_index,series_name,slice_index,x,y,radius_mm,dicom_di
 2026-02-23 18:54:03,case4,axial,31,4.000000-t2tsetra-97183,9,-15.16,21.43,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case4
 2026-02-23 19:58:23,case1,axial,31,4.000000-t2tsetra-97183,13,18.35,0.12,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1
 2026-02-23 21:31:11,case1,axial,31,4.000000-t2tsetra-97183,9,-15.65,21.37,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1
+2026-02-23 22:23:18,case1,axial,31,4.000000-t2tsetra-97183,9,-15.65,22.36,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1
+2026-02-23 22:23:36,case1,axial,31,4.000000-t2tsetra-97183,9,-15.15,21.37,5.0,C:\ARARAT_MVP\data\PROSTATEx\SAMPLES\case1

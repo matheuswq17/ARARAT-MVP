@@ -12,6 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Circle, Ellipse, Rectangle
+import SimpleITK as sitk
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -102,6 +103,9 @@ class ViewerApp:
         self.sitk_img = None
         self.np_vol = None
         self.meta = None
+        self.sitk_img_disp = None
+        self.np_vol_disp = None
+        self.meta_disp = None
         self.roi_status = {} # {lesion_id: "OK"/"PARTIAL"/"OUT"}
         self.rois_by_patient = {} # {patient_id: [rois]}
         
@@ -110,6 +114,29 @@ class ViewerApp:
         self.center_voxel = [0, 0, 0]
         self.center_mm = None
         self.active_view = "axial"
+        self.crop_mode = "CROP"
+        self.crop_mm = {
+            "axial": (180.0, 180.0),
+            "coronal": (220.0, 140.0),
+            "sagittal": (220.0, 140.0),
+        }
+        self.view_zoom = {"axial": 1.0, "coronal": 1.0, "sagittal": 1.0}
+        self.view_pan = {"axial": (0.0, 0.0), "coronal": (0.0, 0.0), "sagittal": (0.0, 0.0)}
+        self._pan_drag = {"active": False, "plane": None, "start_xy": None, "start_pan": None}
+        self.win = {"axial": None, "coronal": None, "sagittal": None}
+        self.level = {"axial": None, "coronal": None, "sagittal": None}
+        self._wl_drag = {"active": False, "plane": None, "start_xy": None, "base_win": None, "base_level": None}
+        self.view_state = {}
+        for plane in ["axial", "coronal", "sagittal"]:
+            self.view_state[plane] = {
+                "mode": "FULL",
+                "xlim": None,
+                "ylim": None,
+                "zoom": 1.0,
+                "pan": (0.0, 0.0),
+            }
+        self.dev_layout_debug = False
+        self._last_view_limits = {p: None for p in ["axial", "coronal", "sagittal"]}
         
         # ROI Candidata (Preview)
         self.candidate_center = None # (i, j, k) - None se seguindo mouse
@@ -543,6 +570,7 @@ class ViewerApp:
         """Carrega os dados da serie selecionada no momento."""
         if not self.series_list or self.current_series_idx >= len(self.series_list):
             self.sitk_img, self.np_vol, self.meta = None, None, None
+            self.sitk_img_disp, self.np_vol_disp, self.meta_disp = None, None, None
             self.max_slice = 0
             self.current_slice = 0
             self.center_voxel = [0, 0, 0]
@@ -590,6 +618,7 @@ class ViewerApp:
                 return
 
         self.max_slice = self.np_vol.shape[0] - 1
+        self._prepare_display_volume()
         
         # Validar ROIs para esta série
         self.validate_rois_for_current_series()
@@ -619,6 +648,16 @@ class ViewerApp:
             j = sz_j // 2
             k = sz_k // 2
             self._set_center_voxel(i, j, k)
+        for plane in ["axial", "coronal", "sagittal"]:
+            self._reset_wl_for_plane(plane, use_full_volume=True)
+            state = self.view_state.get(plane)
+            if state is not None:
+                state["mode"] = "FULL"
+                state["xlim"] = None
+                state["ylim"] = None
+                state["zoom"] = 1.0
+                state["pan"] = (0.0, 0.0)
+        self.crop_mode = "CROP"
         
         self.candidate_center = None
         self.is_locked = False
@@ -665,7 +704,12 @@ class ViewerApp:
 
         self.fig = plt.figure(figsize=(16, 10))
         self.fig.patch.set_facecolor("#222222")
-        gs = self.fig.add_gridspec(2, 3, width_ratios=[1.0, 1.6, 1.6], height_ratios=[1.0, 1.0])
+        gs = self.fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[0.22, 0.58, 0.20],
+            height_ratios=[0.55, 0.45],
+        )
 
         self.ax_sidebar = self.fig.add_subplot(gs[:, 0])
         self.ax_axial = self.fig.add_subplot(gs[0, 1])
@@ -710,6 +754,7 @@ class ViewerApp:
         # conectar eventos
         self.fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
+        self.fig.canvas.mpl_connect('button_release_event', self.on_button_release)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.fig.canvas.mpl_connect('draw_event', self.on_draw)
@@ -720,6 +765,19 @@ class ViewerApp:
 
     def on_draw(self, event):
         return
+
+    def on_button_release(self, event):
+        if self._pan_drag["active"]:
+            self._pan_drag["active"] = False
+            self._pan_drag["plane"] = None
+            self._pan_drag["start_xy"] = None
+            self._pan_drag["start_pan"] = None
+        if self._wl_drag["active"]:
+            self._wl_drag["active"] = False
+            self._wl_drag["plane"] = None
+            self._wl_drag["start_xy"] = None
+            self._wl_drag["base_win"] = None
+            self._wl_drag["base_level"] = None
 
     def _draw_preview_fast(self):
         """Desenha o preview da ROI usando blitting e artists persistentes."""
@@ -820,6 +878,80 @@ class ViewerApp:
             if label:
                 self.ax.text(ci+2, cj+2, label, color=color, fontweight='bold', fontsize=8)
 
+    def _prepare_display_volume(self):
+        self.sitk_img_disp = None
+        self.np_vol_disp = None
+        self.meta_disp = None
+        if self.sitk_img is None or self.np_vol is None or self.meta is None:
+            return
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            sx, sy, sz = self.sitk_img.GetSpacing()
+        s_min = min(float(sx), float(sy), float(sz))
+        target_spacing = (s_min, s_min, s_min)
+        size_x, size_y, size_z = self.sitk_img.GetSize()
+        new_size = [
+            int(round(size_x * sx / target_spacing[0])),
+            int(round(size_y * sy / target_spacing[1])),
+            int(round(size_z * sz / target_spacing[2])),
+        ]
+        resampled = sitk.Resample(
+            self.sitk_img,
+            new_size,
+            sitk.Transform(),
+            sitk.sitkBSpline,
+            self.sitk_img.GetOrigin(),
+            target_spacing,
+            self.sitk_img.GetDirection(),
+            0.0,
+            self.sitk_img.GetPixelID(),
+        )
+        self.sitk_img_disp = resampled
+        self.np_vol_disp = sitk.GetArrayFromImage(resampled)
+        self.meta_disp = {
+            "origin": resampled.GetOrigin(),
+            "spacing": resampled.GetSpacing(),
+            "direction": resampled.GetDirection(),
+            "size": resampled.GetSize(),
+        }
+
+    def _get_wl_for_plane(self, plane):
+        w = self.win.get(plane)
+        l = self.level.get(plane)
+        return w, l
+
+    def _reset_wl_for_plane(self, plane, use_full_volume=False):
+        if self.np_vol is None:
+            self.win[plane] = None
+            self.level[plane] = None
+            return
+        vol = self.np_vol
+        if not use_full_volume:
+            sz_k, sz_j, sz_i = vol.shape
+            i, j, k = self.center_voxel
+            i = int(max(0, min(i, sz_i - 1)))
+            j = int(max(0, min(j, sz_j - 1)))
+            k = int(max(0, min(k, sz_k - 1)))
+            if plane == "axial":
+                slice_img = vol[k, :, :]
+            elif plane == "sagittal":
+                slice_img = vol[:, :, i]
+            else:
+                slice_img = vol[:, j, :]
+            data = slice_img.astype(float).ravel()
+        else:
+            data = vol.astype(float).ravel()
+        if data.size == 0:
+            self.win[plane] = None
+            self.level[plane] = None
+            return
+        p1, p99 = np.percentile(data, [1, 99])
+        w = float(max(p99 - p1, 1e-3))
+        l = float((p99 + p1) * 0.5)
+        self.win[plane] = w
+        self.level[plane] = l
+
     def _get_help_text(self):
         """Gera o texto do help com alinhamento perfeito."""
         def fmt_line(cmd, desc, col=18):
@@ -857,39 +989,56 @@ class ViewerApp:
         return "\n".join(lines)
 
     def _render_mpr_view(self, ax, plane):
-        if ax is None or self.np_vol is None or self.meta is None:
+        if ax is None or self.meta is None or self.np_vol is None:
             return
-        sz_k, sz_j, sz_i = self.np_vol.shape
-        i, j, k = self.center_voxel
+        vol = self.np_vol_disp if self.np_vol_disp is not None else self.np_vol
+        meta_d = self.meta_disp if self.meta_disp is not None else self.meta
+        sz_k, sz_j, sz_i = vol.shape
         try:
-            sx, sy, sz = self.meta["spacing"]
+            sx, sy, sz = meta_d["spacing"]
         except Exception:
-            try:
-                sx, sy, sz = self.sitk_img.GetSpacing()
-            except Exception:
-                sx, sy, sz = (1.0, 1.0, 1.0)
+            sx, sy, sz = (1.0, 1.0, 1.0)
+        if self.center_mm is not None:
+            cx_mm, cy_mm, cz_mm = self.center_mm
+            vi, vj, vk = dicom_io.mm_to_voxel(cx_mm, cy_mm, cz_mm, meta_d)
+        else:
+            i0, j0, k0 = self.center_voxel
+            vx_mm, vy_mm, vz_mm = dicom_io.voxel_to_mm(i0, j0, k0, meta_d)
+            vi, vj, vk = dicom_io.mm_to_voxel(vx_mm, vy_mm, vz_mm, meta_d)
+        vi_i = int(max(0, min(round(vi), sz_i - 1)))
+        vj_j = int(max(0, min(round(vj), sz_j - 1)))
+        vk_k = int(max(0, min(round(vk), sz_k - 1)))
         if plane == "axial":
-            slice_index = int(max(0, min(k, sz_k - 1)))
-            slice_img = self.np_vol[slice_index, :, :]
-            extent = [0.0, sz_i * sx, sz_j * sy, 0.0]
+            slice_index = vk_k
+            slice_img = vol[slice_index, :, :]
+            max_x = sz_i * sx
+            max_y = sz_j * sy
+            center_x = cx_mm
+            center_y = cy_mm
         elif plane == "sagittal":
-            slice_index = int(max(0, min(i, sz_i - 1)))
-            slice_img = self.np_vol[:, :, slice_index]
-            anisotropy = sz / max(min(sx, sy), 1e-3)
-            if anisotropy > 1.5:
-                scale = max(1, min(4, int(round(anisotropy))))
-                slice_img = np.repeat(slice_img, scale, axis=0)
-            extent = [0.0, sz_j * sy, sz_k * sz, 0.0]
+            slice_index = vi_i
+            slice_img = vol[:, :, slice_index]
+            max_x = sz_j * sy
+            max_y = sz_k * sz
+            center_x = cy_mm
+            center_y = cz_mm
         elif plane == "coronal":
-            slice_index = int(max(0, min(j, sz_j - 1)))
-            slice_img = self.np_vol[:, slice_index, :]
-            anisotropy = sz / max(min(sx, sy), 1e-3)
-            if anisotropy > 1.5:
-                scale = max(1, min(4, int(round(anisotropy))))
-                slice_img = np.repeat(slice_img, scale, axis=0)
-            extent = [0.0, sz_i * sx, sz_k * sz, 0.0]
+            slice_index = vj_j
+            slice_img = vol[:, slice_index, :]
+            max_x = sz_i * sx
+            max_y = sz_k * sz
+            center_x = cx_mm
+            center_y = cz_mm
         else:
             return
+        state = self.view_state.get(plane)
+        win, level = self._get_wl_for_plane(plane)
+        if win is not None and level is not None:
+            vmin = level - win / 2.0
+            vmax = level + win / 2.0
+        else:
+            vmin, vmax = None, None
+        extent = [0.0, max_x, max_y, 0.0]
         ax.imshow(
             slice_img,
             cmap="gray",
@@ -897,13 +1046,66 @@ class ViewerApp:
             extent=extent,
             aspect="equal",
             interpolation="bicubic",
+            vmin=vmin,
+            vmax=vmax,
         )
-        ax.set_xlim(extent[0], extent[1])
-        ax.set_ylim(extent[2], extent[3])
+        ax.set_autoscale_on(False)
+        ax.set_aspect("equal", adjustable="box")
+        if state is None:
+            mode = "FULL"
+            xlim, ylim = (0.0, max_x), (max_y, 0.0)
+        else:
+            mode = state.get("mode", "FULL")
+            xlim = state.get("xlim")
+            ylim = state.get("ylim")
+            if xlim is None or ylim is None:
+                if mode == "CROP":
+                    crop_w, crop_h = self.crop_mm.get(plane, (max_x, max_y))
+                    half_w = crop_w * 0.5
+                    half_h = crop_h * 0.5
+                    x0 = max(0.0, center_x - half_w)
+                    x1 = min(max_x, center_x + half_w)
+                    y0 = max(0.0, center_y - half_h)
+                    y1 = min(max_y, center_y + half_h)
+                    xlim = (x0, x1)
+                    ylim = (y1, y0)
+                else:
+                    xlim = (0.0, max_x)
+                    ylim = (max_y, 0.0)
+                state["xlim"] = xlim
+                state["ylim"] = ylim
+        if xlim is not None and ylim is not None:
+            ax.set_xlim(xlim[0], xlim[1])
+            ax.set_ylim(ylim[0], ylim[1])
         ax.set_xticks([])
         ax.set_yticks([])
         for sp in ax.spines.values():
             sp.set_visible(True)
+        if self.dev_layout_debug and state is not None:
+            bbox = ax.get_window_extent().bounds if self.fig and self.fig.canvas else (0.0, 0.0, 0.0, 0.0)
+            xlim_now = ax.get_xlim()
+            ylim_now = ax.get_ylim()
+            dbg = (
+                f"bbox={bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f}\n"
+                f"xlim={xlim_now[0]:.1f},{xlim_now[1]:.1f}\n"
+                f"ylim={ylim_now[0]:.1f},{ylim_now[1]:.1f}\n"
+                f"mode={state.get('mode','')}"
+            )
+            ax.text(
+                0.02,
+                0.02,
+                dbg,
+                transform=ax.transAxes,
+                fontsize=6,
+                color="cyan",
+                verticalalignment="bottom",
+                family="monospace",
+            )
+            last = self._last_view_limits.get(plane)
+            cur = (round(xlim_now[0], 3), round(xlim_now[1], 3), round(ylim_now[0], 3), round(ylim_now[1], 3))
+            if last != cur:
+                print(f"[VIEW] {plane} xlim={xlim_now} ylim={ylim_now} mode={state.get('mode')}")
+                self._last_view_limits[plane] = cur
         self._draw_crosshair(ax, plane)
         self._draw_rois_on_plane(ax, plane, slice_index)
         self._draw_gt_on_plane(ax, plane, slice_index)
@@ -938,13 +1140,17 @@ class ViewerApp:
                 label = f"{name} i={pos}/{total}"
         else:
             label = f"{name} [NO DATA]"
-        ax.set_title(
+        ax.text(
+            0.02,
+            0.98,
             label,
+            transform=ax.transAxes,
             fontsize=10,
             color=title_color,
             fontfamily="monospace",
             bbox=dict(facecolor=base_color, alpha=0.9, edgecolor="none", boxstyle="round,pad=0.3"),
-            loc="center",
+            verticalalignment="top",
+            horizontalalignment="left",
         )
         for side, sp in ax.spines.items():
             sp.set_linewidth(1.5 if is_active else 1.0)
@@ -1422,17 +1628,56 @@ class ViewerApp:
             self.active_view = plane
             if self.fig:
                 self.update_plot()
+        if self._pan_drag["active"] and self._pan_drag["plane"] == plane:
+            ax = event.inaxes
+            if ax is None:
+                return
+            start_x, start_y = self._pan_drag["start_xy"]
+            dx_px = event.x - start_x
+            dy_px = event.y - start_y
+            x0, x1 = ax.get_xlim()
+            y1, y0 = ax.get_ylim()
+            width_px = max(ax.bbox.width, 1.0)
+            height_px = max(ax.bbox.height, 1.0)
+            mm_per_px_x = (x1 - x0) / width_px
+            mm_per_px_y = (y0 - y1) / height_px if (y0 - y1) != 0 else 0.0
+            dx_mm = -dx_px * mm_per_px_x
+            dy_mm = -dy_px * mm_per_px_y
+            state = self.view_state.get(plane)
+            if state is not None and state.get("xlim") and state.get("ylim"):
+                xlim0, xlim1 = state["xlim"]
+                ylim0, ylim1 = state["ylim"]
+                state["xlim"] = (xlim0 + dx_mm, xlim1 + dx_mm)
+                state["ylim"] = (ylim0 + dy_mm, ylim1 + dy_mm)
+            self.update_plot()
+            return
+        if self._wl_drag["active"] and self._wl_drag["plane"] == plane:
+            start_x, start_y = self._wl_drag["start_xy"]
+            base_win = self._wl_drag["base_win"]
+            base_level = self._wl_drag["base_level"]
+            if base_win is None or base_level is None:
+                self._reset_wl_for_plane(plane, use_full_volume=False)
+                base_win, base_level = self._get_wl_for_plane(plane)
+                self._wl_drag["base_win"] = base_win
+                self._wl_drag["base_level"] = base_level
+            dx = event.x - start_x
+            dy = event.y - start_y
+            if base_win is None or base_level is None:
+                return
+            factor = 1.0 + dx * 0.01
+            if factor <= 0.0:
+                factor = 0.01
+            new_win = max(base_win * factor, 1e-3)
+            new_level = base_level - dy * (base_win * 0.01)
+            self.win[plane] = new_win
+            self.level[plane] = new_level
+            self.update_plot()
+            return
 
     def on_scroll(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
             return
         if self.np_vol is None:
-            return
-        if event.button == "up":
-            delta = 1
-        elif event.button == "down":
-            delta = -1
-        else:
             return
         plane = self.active_view
         if event.inaxes == self.ax_axial:
@@ -1441,17 +1686,43 @@ class ViewerApp:
             plane = "sagittal"
         elif event.inaxes == self.ax_cor:
             plane = "coronal"
+        is_ctrl = getattr(event, "key", None) in ("control", "ctrl", "ctrl+control")
+        if is_ctrl:
+            if event.button == "up":
+                factor = 1.1
+            elif event.button == "down":
+                factor = 1.0 / 1.1
+            else:
+                return
+            state = self.view_state.get(plane)
+            if state is None or not state.get("xlim") or not state.get("ylim"):
+                return
+            x0, x1 = state["xlim"]
+            y0, y1 = state["ylim"]
+            cx = 0.5 * (x0 + x1)
+            cy = 0.5 * (y0 + y1)
+            half_w = 0.5 * (x1 - x0)
+            half_h = 0.5 * (y1 - y0)
+            new_half_w = half_w / factor
+            new_half_h = half_h / factor
+            state["xlim"] = (cx - new_half_w, cx + new_half_w)
+            state["ylim"] = (cy - new_half_h, cy + new_half_h)
+            state["zoom"] = max(1.0, state.get("zoom", 1.0) * factor)
+            self.update_plot()
+            return
+        if event.button == "up":
+            delta = 1
+        elif event.button == "down":
+            delta = -1
+        else:
+            return
         self._move_center_slice(plane, delta)
         self.update_plot()
 
     def on_click(self, event):
         if self.mode in ["SERIES_SELECT", "CASE_SELECT"]:
             return
-        if event.button != 1:
-            return
-        if event.xdata is None or event.ydata is None:
-            return
-        if self.meta is None or self.np_vol is None:
+        if event.inaxes is None:
             return
         try:
             sx, sy, sz = self.meta["spacing"]
@@ -1469,6 +1740,41 @@ class ViewerApp:
         else:
             return
         self.active_view = plane
+        if event.dblclick and event.button == 1:
+            state = self.view_state.get(plane)
+            if state is not None:
+                state["mode"] = "FULL"
+                state["xlim"] = None
+                state["ylim"] = None
+                state["zoom"] = 1.0
+                state["pan"] = (0.0, 0.0)
+            self.update_plot()
+            return
+        if event.button == 2:
+            self._pan_drag["active"] = True
+            self._pan_drag["plane"] = plane
+            self._pan_drag["start_xy"] = (event.x, event.y)
+            self._pan_drag["start_pan"] = None
+            return
+        if event.button == 3:
+            if self.meta is None or self.np_vol is None:
+                return
+            self._wl_drag["active"] = True
+            self._wl_drag["plane"] = plane
+            self._wl_drag["start_xy"] = (event.x, event.y)
+            win, level = self._get_wl_for_plane(plane)
+            if win is None or level is None:
+                self._reset_wl_for_plane(plane, use_full_volume=False)
+                win, level = self._get_wl_for_plane(plane)
+            self._wl_drag["base_win"] = win
+            self._wl_drag["base_level"] = level
+            return
+        if event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        if self.meta is None or self.np_vol is None:
+            return
         i, j, k = self.center_voxel
         if plane == "axial":
             i = int(round(event.xdata / sx))
@@ -1599,6 +1905,17 @@ class ViewerApp:
                 self.update_plot()
             elif event.key in ['down', 'left']:
                 self._move_center_slice(self.active_view, -1)
+                self.update_plot()
+            elif event.key == 'z':
+                for plane in ["axial", "coronal", "sagittal"]:
+                    state = self.view_state.get(plane)
+                    if state is not None:
+                        state["mode"] = "CROP" if state.get("mode") != "CROP" else "FULL"
+                        state["xlim"] = None
+                        state["ylim"] = None
+                self.update_plot()
+            elif event.key == 'r':
+                self._reset_wl_for_plane(self.active_view, use_full_volume=False)
                 self.update_plot()
             elif event.key in ['+', '=']:
                 self.radius_mm += 0.5
