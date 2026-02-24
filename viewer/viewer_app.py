@@ -962,7 +962,8 @@ class ViewerApp:
             "=== COMANDOS DO SISTEMA ===",
             "",
             "NAVEGACAO",
-            fmt_line("Scroll/Arrows", "trocar slice"),
+            fmt_line("Scroll", "zoom in/out (painel ativo)"),
+            fmt_line("Arrows", "trocar slice"),
             fmt_line("[ / ]", "paginar series"),
             fmt_line("1..9", "atalho serie"),
             fmt_line("Ctrl + G", "ir para serie N"),
@@ -988,8 +989,7 @@ class ViewerApp:
             fmt_line("D", "toggle modo DEV/DEBUG"),
             fmt_line("R / Shift+R", "reset view (ativo) / reset all"),
             fmt_line("I", "toggle interpolacao nearest/bilinear"),
-            fmt_line("Shift+Scroll", "ajustar window (contraste)"),
-            fmt_line("Ctrl+Scroll", "ajustar level (brilho)"),
+            fmt_line("Botao dir + drag", "ajustar brilho/contraste (WL)"),
             fmt_line("Q", "sair")
         ]
         return "\n".join(lines)
@@ -1847,43 +1847,26 @@ class ViewerApp:
         plane = self._plane_for_axes(event.inaxes)
         if plane is None:
             return
-        key = getattr(event, "key", None) or ""
-        is_ctrl = ("ctrl" in key) or ("control" in key)
-        is_shift = ("shift" in key)
-        if is_shift or is_ctrl:
-            w, l = self._get_wl_for_plane(plane)
-            if w is None or l is None:
-                self._reset_wl_for_plane(plane, use_full_volume=False)
-                w, l = self._get_wl_for_plane(plane)
-            if event.button == "up":
-                delta_dir = 1
-            elif event.button == "down":
-                delta_dir = -1
-            else:
-                return
-            if is_shift:
-                factor = 1.1 if delta_dir > 0 else (1.0 / 1.1)
-                new_w = max(w * factor, 1e-3)
-                new_l = l
-            elif is_ctrl:
-                step = max(w * 0.1, 1e-3)
-                new_l = l + (step * delta_dir)
-                new_w = w
-            else:
-                return
-            self.win[plane] = new_w
-            self.level[plane] = new_l
-            self.toast_message = f"WL: C={new_l:.1f} W={new_w:.1f}"
-            self.toast_until = time.time() + 2.5
-            self.update_plot()
-            return
         if event.button == "up":
-            delta = 1
+            factor = 1.1
         elif event.button == "down":
-            delta = -1
+            factor = 1.0 / 1.1
         else:
             return
-        self._move_center_slice(plane, delta)
+        state = self.view_state.get(plane)
+        if state is None or not state.get("xlim") or not state.get("ylim"):
+            return
+        x0, x1 = state["xlim"]
+        y0, y1 = state["ylim"]
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        half_w = 0.5 * (x1 - x0)
+        half_h = 0.5 * (y1 - y0)
+        new_half_w = half_w / factor
+        new_half_h = half_h / factor
+        state["xlim"] = (cx - new_half_w, cx + new_half_w)
+        state["ylim"] = (cy - new_half_h, cy + new_half_h)
+        state["zoom"] = max(1.0, state.get("zoom", 1.0) * factor)
         self.update_plot()
 
     def on_click(self, event):
