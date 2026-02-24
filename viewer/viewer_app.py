@@ -8,6 +8,7 @@ import traceback
 from datetime import datetime
 import time
 from PIL import Image
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Circle, Ellipse, Rectangle
@@ -662,7 +663,7 @@ class ViewerApp:
         plt.rcParams['keymap.quit'] = ''
 
         self.fig = plt.figure(figsize=(16, 10))
-        gs = self.fig.add_gridspec(2, 3, width_ratios=[3, 3, 2], height_ratios=[3, 3])
+        gs = self.fig.add_gridspec(2, 3, width_ratios=[1.15, 1.15, 0.70], height_ratios=[1.05, 1.00])
         
         self.ax_axial = self.fig.add_subplot(gs[0, 0])
         self.ax_sag = self.fig.add_subplot(gs[0, 1])
@@ -705,8 +706,7 @@ class ViewerApp:
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.fig.canvas.mpl_connect('draw_event', self.on_draw)
         
-        # Ajustar margens/espacamentos para layout mais compacto (PACS-like)
-        plt.subplots_adjust(top=0.95, bottom=0.05, left=0.03, right=0.98, wspace=0.03, hspace=0.04)
+        plt.subplots_adjust(top=0.95, bottom=0.05, left=0.03, right=0.98, wspace=0.03, hspace=0.10)
         
         plt.show()
 
@@ -849,11 +849,10 @@ class ViewerApp:
         return "\n".join(lines)
 
     def _render_mpr_view(self, ax, plane):
-        if ax is None or self.np_vol is None:
+        if ax is None or self.np_vol is None or self.meta is None:
             return
         sz_k, sz_j, sz_i = self.np_vol.shape
         i, j, k = self.center_voxel
-        sx, sy, sz = None, None, None
         try:
             sx, sy, sz = self.meta["spacing"]
         except Exception:
@@ -864,23 +863,35 @@ class ViewerApp:
         if plane == "axial":
             slice_index = int(max(0, min(k, sz_k - 1)))
             slice_img = self.np_vol[slice_index, :, :]
-            height, width = slice_img.shape
-            aspect = sy / sx
+            extent = [0.0, sz_i * sx, sz_j * sy, 0.0]
         elif plane == "sagittal":
             slice_index = int(max(0, min(i, sz_i - 1)))
             slice_img = self.np_vol[:, :, slice_index]
-            height, width = slice_img.shape
-            aspect = sz / sy
+            anisotropy = sz / max(min(sx, sy), 1e-3)
+            if anisotropy > 1.5:
+                scale = max(1, min(4, int(round(anisotropy))))
+                slice_img = np.repeat(slice_img, scale, axis=0)
+            extent = [0.0, sz_j * sy, sz_k * sz, 0.0]
         elif plane == "coronal":
             slice_index = int(max(0, min(j, sz_j - 1)))
             slice_img = self.np_vol[:, slice_index, :]
-            height, width = slice_img.shape
-            aspect = sz / sx
+            anisotropy = sz / max(min(sx, sy), 1e-3)
+            if anisotropy > 1.5:
+                scale = max(1, min(4, int(round(anisotropy))))
+                slice_img = np.repeat(slice_img, scale, axis=0)
+            extent = [0.0, sz_i * sx, sz_k * sz, 0.0]
         else:
             return
-        ax.imshow(slice_img, cmap="gray", interpolation="nearest", origin="upper", aspect=aspect)
-        ax.set_xlim(0, width - 1)
-        ax.set_ylim(height - 1, 0)
+        ax.imshow(
+            slice_img,
+            cmap="gray",
+            origin="upper",
+            extent=extent,
+            aspect="equal",
+            interpolation="bicubic",
+        )
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
         ax.set_xticks([])
         ax.set_yticks([])
         for sp in ax.spines.values():
@@ -895,12 +906,18 @@ class ViewerApp:
         name = "AXIAL" if plane == "axial" else ("SAGITTAL" if plane == "sagittal" else "CORONAL")
         is_active = (plane == self.active_view)
         title_color = "yellow" if is_active else "white"
+        if plane == "axial":
+            base_color = "#d32f2f"
+        elif plane == "sagittal":
+            base_color = "#fbc02d"
+        else:
+            base_color = "#388e3c"
         ax.set_title(
             name,
             fontsize=10,
             color=title_color,
             fontfamily="monospace",
-            bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", boxstyle="round,pad=0.3"),
+            bbox=dict(facecolor=base_color, alpha=0.85, edgecolor="none", boxstyle="round,pad=0.3"),
             loc="center",
         )
         for sp in ax.spines.values():
@@ -911,15 +928,22 @@ class ViewerApp:
         if self.np_vol is None or self.meta is None:
             return
         i, j, k = self.center_voxel
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            try:
+                sx, sy, sz = self.sitk_img.GetSpacing()
+            except Exception:
+                sx, sy, sz = (1.0, 1.0, 1.0)
         if plane == "axial":
-            x = i
-            y = j
+            x = i * sx
+            y = j * sy
         elif plane == "sagittal":
-            x = j
-            y = k
+            x = j * sy
+            y = k * sz
         elif plane == "coronal":
-            x = i
-            y = k
+            x = i * sx
+            y = k * sz
         else:
             return
         ax.axvline(x, color="yellow", linestyle="--", linewidth=0.8)
@@ -949,7 +973,13 @@ class ViewerApp:
         if not self.rois:
             return
         sz_k, sz_j, sz_i = self.np_vol.shape
-        sx, sy, sz = self.meta["spacing"]
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            try:
+                sx, sy, sz = self.sitk_img.GetSpacing()
+            except Exception:
+                sx, sy, sz = (1.0, 1.0, 1.0)
         for roi in self.rois:
             color, text_label = self._get_roi_draw_params(roi)
             ci, cj, ck = roi["center_voxel"]
@@ -959,35 +989,29 @@ class ViewerApp:
                 if d_mm > r_mm:
                     continue
                 r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
-                r_px_x = r2d_mm / sx
-                r_px_y = r2d_mm / sy
-                x = ci
-                y = cj
+                x = ci * sx
+                y = cj * sy
             elif plane == "sagittal":
                 d_mm = abs((slice_index - ci) * sx)
                 if d_mm > r_mm:
                     continue
                 r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
-                r_px_x = r2d_mm / sy
-                r_px_y = r2d_mm / sz
-                x = cj
-                y = ck
+                x = cj * sy
+                y = ck * sz
             elif plane == "coronal":
                 d_mm = abs((slice_index - cj) * sy)
                 if d_mm > r_mm:
                     continue
                 r2d_mm = (r_mm * r_mm - d_mm * d_mm) ** 0.5
-                r_px_x = r2d_mm / sx
-                r_px_y = r2d_mm / sz
-                x = ci
-                y = ck
+                x = ci * sx
+                y = ck * sz
             else:
                 continue
             ax.plot(x, y, marker="+", color=color, markersize=8, alpha=0.8)
             ellipse = Ellipse(
                 (x, y),
-                width=r_px_x * 2,
-                height=r_px_y * 2,
+                width=r2d_mm * 2.0,
+                height=r2d_mm * 2.0,
                 fill=False,
                 color=color,
                 linestyle="-",
@@ -1001,6 +1025,13 @@ class ViewerApp:
         if not self.show_gt or not self.gt_lesions or self.meta is None or self.np_vol is None:
             return
         sz_k, sz_j, sz_i = self.np_vol.shape
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            try:
+                sx, sy, sz = self.sitk_img.GetSpacing()
+            except Exception:
+                sx, sy, sz = (1.0, 1.0, 1.0)
         for idx, lesion in enumerate(self.gt_lesions, 1):
             x_mm, y_mm, z_mm = lesion["xyz_mm"]
             vi, vj, vk = dicom_io.mm_to_voxel(x_mm, y_mm, z_mm, self.meta)
@@ -1012,18 +1043,18 @@ class ViewerApp:
             if plane == "axial":
                 if vk_int != slice_index:
                     continue
-                x = vi_int
-                y = vj_int
+                x = vi_int * sx
+                y = vj_int * sy
             elif plane == "sagittal":
                 if vi_int != slice_index:
                     continue
-                x = vj_int
-                y = vk_int
+                x = vj_int * sy
+                y = vk_int * sz
             elif plane == "coronal":
                 if vj_int != slice_index:
                     continue
-                x = vi_int
-                y = vk_int
+                x = vi_int * sx
+                y = vk_int * sz
             else:
                 continue
             lid = lesion.get("lesion_id") or f"L{idx}"
@@ -1369,6 +1400,15 @@ class ViewerApp:
             return
         if event.xdata is None or event.ydata is None:
             return
+        if self.meta is None or self.np_vol is None:
+            return
+        try:
+            sx, sy, sz = self.meta["spacing"]
+        except Exception:
+            try:
+                sx, sy, sz = self.sitk_img.GetSpacing()
+            except Exception:
+                sx, sy, sz = (1.0, 1.0, 1.0)
         if event.inaxes == self.ax_axial:
             plane = "axial"
         elif event.inaxes == self.ax_sag:
@@ -1380,14 +1420,14 @@ class ViewerApp:
         self.active_view = plane
         i, j, k = self.center_voxel
         if plane == "axial":
-            i = int(round(event.xdata))
-            j = int(round(event.ydata))
+            i = int(round(event.xdata / sx))
+            j = int(round(event.ydata / sy))
         elif plane == "sagittal":
-            j = int(round(event.xdata))
-            k = int(round(event.ydata))
+            j = int(round(event.xdata / sy))
+            k = int(round(event.ydata / sz))
         elif plane == "coronal":
-            i = int(round(event.xdata))
-            k = int(round(event.ydata))
+            i = int(round(event.xdata / sx))
+            k = int(round(event.ydata / sz))
         self._set_center_voxel(i, j, k)
         self.candidate_center = [i, j, k]
         self.is_locked = True
