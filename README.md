@@ -56,3 +56,9 @@ scripts\run_infer_features.ps1 -FeaturesCsv "caminho\para\features.csv" -RowInde
 - Uso no viewer:
   - `G`: alterna exibição do gabarito GT no slice atual.
   - `Shift+G`: pula para o slice da lesão GT mais próxima (usa última ROI como referência, ou primeira lesão GT).
+
+## Notas de Layout MPR (anti-regressão)
+- Não usar `tight_layout` / `constrained_layout` no MPR
+- Layout MPR é fixo via `fig.add_axes` + `ax.set_position`
+- `aspect="equal"` com `adjustable="datalim"` e `ax.set_anchor("C")` preserva escala em mm
+- Debug visual somente no modo dev (toggle com tecla `D`)

@@ -136,7 +136,8 @@ class ViewerApp:
                 "zoom": 1.0,
                 "pan": (0.0, 0.0),
             }
-        self.dev_layout_debug = True
+        self.dev_layout_debug = False
+        self.interp_mode = "bilinear"
         self._last_view_limits = {p: None for p in ["axial", "coronal", "sagittal"]}
         self.slot_main = [0.27, 0.55, 0.50, 0.40]
         self.slot_bl = [0.27, 0.05, 0.24, 0.40]
@@ -946,7 +947,7 @@ class ViewerApp:
             self.win[plane] = None
             self.level[plane] = None
             return
-        p1, p99 = np.percentile(data, [1, 99])
+        p1, p99 = np.percentile(data, [2, 98])
         w = float(max(p99 - p1, 1e-3))
         l = float((p99 + p1) * 0.5)
         self.win[plane] = w
@@ -971,7 +972,7 @@ class ViewerApp:
             "",
             "ROI (LESAO)",
             fmt_line("Clique esq.", "travar centro"),
-            fmt_line("Enter / D", "confirmar ROI"),
+            fmt_line("Enter", "confirmar ROI"),
             fmt_line("X", "limpar selecao"),
             fmt_line("+ / -", "ajustar raio"),
             fmt_line("Del", "deletar ultima"),
@@ -984,6 +985,11 @@ class ViewerApp:
             fmt_line("V", "VALIDAR ROIs (log)"),
             fmt_line("O", "abrir data_root"),
             fmt_line("H", "mostrar/ocultar help"),
+            fmt_line("D", "toggle modo DEV/DEBUG"),
+            fmt_line("R / Shift+R", "reset view (ativo) / reset all"),
+            fmt_line("I", "toggle interpolacao nearest/bilinear"),
+            fmt_line("Shift+Scroll", "ajustar window (contraste)"),
+            fmt_line("Ctrl+Scroll", "ajustar level (brilho)"),
             fmt_line("Q", "sair")
         ]
         return "\n".join(lines)
@@ -1044,7 +1050,7 @@ class ViewerApp:
             cmap="gray",
             origin="upper",
             extent=extent,
-            interpolation="bicubic",
+            interpolation=self.interp_mode,
             vmin=vmin,
             vmax=vmax,
         )
@@ -1109,7 +1115,7 @@ class ViewerApp:
         self._draw_crosshair(ax, plane)
         self._draw_rois_on_plane(ax, plane, slice_index)
         self._draw_gt_on_plane(ax, plane, slice_index)
-        if self.fig:
+        if self.fig and self.dev_layout_debug:
             w_px, h_px = self._get_axes_px(ax)
             if w_px and h_px:
                 if ax is self.ax_axial:
@@ -1134,6 +1140,7 @@ class ViewerApp:
                         family="monospace",
                         alpha=0.9,
                     )
+        self._draw_orientation_labels(ax, plane)
         if ax is self.ax_axial:
             ax.set_position(self.slot_main)
         elif ax is self.ax_cor:
@@ -1191,6 +1198,64 @@ class ViewerApp:
             return w_px, h_px
         except Exception:
             return 0, 0
+    
+    def _draw_orientation_labels(self, ax, plane):
+        meta = self.meta_disp if self.meta_disp is not None else self.meta
+        if meta is None or ax is None:
+            return
+        try:
+            direction = meta.get("direction")
+        except Exception:
+            direction = None
+        use_fallback = False
+        labels_lr = ("L", "R")
+        labels_ap = ("A", "P")
+        labels_si = ("S", "I")
+        def axis_letter(vec):
+            idx = int(np.argmax(np.abs(vec)))
+            sign = np.sign(vec[idx])
+            if idx == 0:
+                return ("L" if sign > 0 else "R", "R" if sign > 0 else "L")
+            elif idx == 1:
+                return ("P" if sign > 0 else "A", "A" if sign > 0 else "P")
+            else:
+                return ("S" if sign > 0 else "I", "I" if sign > 0 else "S")
+        if direction and isinstance(direction, (list, tuple)) and len(direction) == 9:
+            d = np.array(direction, dtype=float).reshape(3, 3)
+            if plane == "axial":
+                u_vec = d[:, 0]
+                v_vec = d[:, 1]
+            elif plane == "sagittal":
+                u_vec = d[:, 1]
+                v_vec = d[:, 2]
+            elif plane == "coronal":
+                u_vec = d[:, 0]
+                v_vec = d[:, 2]
+            else:
+                return
+            left_right = axis_letter(u_vec)
+            top_bottom = axis_letter(v_vec)
+            left_label, right_label = left_right
+            top_label, bottom_label = top_bottom[1], top_bottom[0]
+        else:
+            use_fallback = True
+            if plane == "axial":
+                left_label, right_label = labels_lr
+                top_label, bottom_label = labels_ap
+            elif plane == "sagittal":
+                left_label, right_label = labels_ap
+                top_label, bottom_label = labels_si
+            elif plane == "coronal":
+                left_label, right_label = labels_lr
+                top_label, bottom_label = labels_si
+            else:
+                return
+        ax.text(0.02, 0.50, left_label, transform=ax.transAxes, color="#dddddd", fontsize=10, alpha=0.7, ha="left", va="center", family="monospace")
+        ax.text(0.98, 0.50, right_label, transform=ax.transAxes, color="#dddddd", fontsize=10, alpha=0.7, ha="right", va="center", family="monospace")
+        ax.text(0.50, 0.98, top_label, transform=ax.transAxes, color="#dddddd", fontsize=10, alpha=0.7, ha="center", va="top", family="monospace")
+        ax.text(0.50, 0.02, bottom_label, transform=ax.transAxes, color="#dddddd", fontsize=10, alpha=0.7, ha="center", va="bottom", family="monospace")
+        if use_fallback and self.dev_layout_debug:
+            ax.text(0.98, 0.02, "ORIENT FALLBACK", transform=ax.transAxes, color="cyan", fontsize=7, alpha=0.7, ha="right", va="bottom", family="monospace")
 
     def _debug_slot_sizes(self):
         if not self.fig:
@@ -1782,28 +1847,34 @@ class ViewerApp:
         plane = self._plane_for_axes(event.inaxes)
         if plane is None:
             return
-        is_ctrl = getattr(event, "key", None) in ("control", "ctrl", "ctrl+control")
-        if is_ctrl:
+        key = getattr(event, "key", None) or ""
+        is_ctrl = ("ctrl" in key) or ("control" in key)
+        is_shift = ("shift" in key)
+        if is_shift or is_ctrl:
+            w, l = self._get_wl_for_plane(plane)
+            if w is None or l is None:
+                self._reset_wl_for_plane(plane, use_full_volume=False)
+                w, l = self._get_wl_for_plane(plane)
             if event.button == "up":
-                factor = 1.1
+                delta_dir = 1
             elif event.button == "down":
-                factor = 1.0 / 1.1
+                delta_dir = -1
             else:
                 return
-            state = self.view_state.get(plane)
-            if state is None or not state.get("xlim") or not state.get("ylim"):
+            if is_shift:
+                factor = 1.1 if delta_dir > 0 else (1.0 / 1.1)
+                new_w = max(w * factor, 1e-3)
+                new_l = l
+            elif is_ctrl:
+                step = max(w * 0.1, 1e-3)
+                new_l = l + (step * delta_dir)
+                new_w = w
+            else:
                 return
-            x0, x1 = state["xlim"]
-            y0, y1 = state["ylim"]
-            cx = 0.5 * (x0 + x1)
-            cy = 0.5 * (y0 + y1)
-            half_w = 0.5 * (x1 - x0)
-            half_h = 0.5 * (y1 - y0)
-            new_half_w = half_w / factor
-            new_half_h = half_h / factor
-            state["xlim"] = (cx - new_half_w, cx + new_half_w)
-            state["ylim"] = (cy - new_half_h, cy + new_half_h)
-            state["zoom"] = max(1.0, state.get("zoom", 1.0) * factor)
+            self.win[plane] = new_w
+            self.level[plane] = new_l
+            self.toast_message = f"WL: C={new_l:.1f} W={new_w:.1f}"
+            self.toast_until = time.time() + 2.5
             self.update_plot()
             return
         if event.button == "up":
@@ -2006,8 +2077,32 @@ class ViewerApp:
                         state["xlim"] = None
                         state["ylim"] = None
                 self.update_plot()
+            elif event.key == 'd':
+                self.dev_layout_debug = not self.dev_layout_debug
+                self.last_message = f"DEV DEBUG: {'ON' if self.dev_layout_debug else 'OFF'}"
+                self.update_plot()
+            elif event.key == 'i':
+                self.interp_mode = "nearest" if self.interp_mode != "nearest" else "bilinear"
+                self.last_message = f"Interpolacao: {self.interp_mode}"
+                self.update_plot()
             elif event.key == 'r':
-                self._reset_wl_for_plane(self.active_view, use_full_volume=False)
+                state = self.view_state.get(self.active_view)
+                if state is not None:
+                    state["mode"] = "FULL"
+                    state["xlim"] = None
+                    state["ylim"] = None
+                    state["zoom"] = 1.0
+                    state["pan"] = (0.0, 0.0)
+                self.update_plot()
+            elif event.key == 'R':
+                for plane in ["axial", "coronal", "sagittal"]:
+                    state = self.view_state.get(plane)
+                    if state is not None:
+                        state["mode"] = "FULL"
+                        state["xlim"] = None
+                        state["ylim"] = None
+                        state["zoom"] = 1.0
+                        state["pan"] = (0.0, 0.0)
                 self.update_plot()
             elif event.key in ['+', '=']:
                 self.radius_mm += 0.5
