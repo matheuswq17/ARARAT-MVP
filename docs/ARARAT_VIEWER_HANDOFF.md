@@ -175,9 +175,15 @@ O sistema permite validar a precisão visual comparando com gabaritos oficiais.
 
 ### Como funciona
 1.  O arquivo `viewer/gt_labels.py` busca arquivos CSV na pasta `LABELS`.
-    *   Prioridade: `ProstateX-Findings-Train.csv`, `ProstateX-Findings-Test.csv`, etc.
+    *   Prioridade: `labels_merged.csv` (Fonte unificada), `ProstateX-Findings-Train.csv`, etc.
 2.  Ele tenta cruzar o ID do caso atual (ex: "ProstateX-0000") com as entradas do CSV.
 3.  Se encontrar, carrega as coordenadas (x, y, z) das lesões reais.
+
+### GT Labels e ISUP/GGG
+*   **Fonte Unificada:** Foi criado o arquivo `data/PROSTATEx/LABELS/labels_merged.csv` para centralizar o Ground Truth.
+*   **Campos:** Além de `ProxID`, `fid`, `pos`, `zone`, `ClinSig`, ele suporta `ISUP` e `GGG` (Gleason Grade Group).
+*   **Estado Atual:** Como os dados originais de ISUP/GGG não estavam disponíveis no repositório, esses campos estão vazios por padrão. Para adicionar, edite diretamente o `labels_merged.csv` mantendo a estrutura.
+*   **Fallback:** Se `labels_merged.csv` for removido, o sistema volta a ler os CSVs originais do ProstateX (sem ISUP/GGG).
 
 ### Controles GT
 *   `g` (minúsculo): Liga/Desliga a sobreposição visual (X Magenta).

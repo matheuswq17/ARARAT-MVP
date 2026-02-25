@@ -279,6 +279,7 @@ def _scan_label_files(data_root):
     dirs.append(os.path.join(parent, "LABELS"))
     dirs.append(os.path.join(parent, "labels"))
     priority_names = [
+        "labels_merged.csv",
         "prostatex-findings-train.csv",
         "prostatex-findings-test.csv",
         "prostatex_findings.csv",
