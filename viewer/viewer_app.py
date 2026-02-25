@@ -32,6 +32,7 @@ except (ImportError, ValueError) as e:
         from shared import dicom_io
         from viewer.exporters import roi_export
         from viewer.exporters import mask_export
+        from viewer.exporters import pdf_report
         from viewer import gt_labels
         from viewer.inference_bridge import predict_for_export_folder
     except ImportError as e2:
