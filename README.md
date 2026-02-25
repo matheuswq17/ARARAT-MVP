@@ -1,64 +1,42 @@
-# ARARAT MVP – Inferência
+# ARARAT MVP – Visualizador e Inferência ProstateX
 
-## Ambiente de Inferência
-- Executar de uma janela do PowerShell na raiz do repositório:
+Este é o repositório do MVP do Projeto ARARAT, focado na visualização e análise de risco de câncer de próstata.
 
-```powershell
-scripts\setup_inference_env.ps1
-```
+## 🚀 Quickstart (Início Rápido)
 
-- Isto cria `.venv_infer` (Python ≥ 3.11) e instala as dependências fixas para carregar `model.joblib` com `scikit-learn==1.8.0`. A instalação do PyRadiomics é opcional; se falhar, o modo CSV permanece funcional.
+1.  **Prepare o ambiente de inferência** (Executar uma única vez no PowerShell):
+    ```powershell
+    .\scripts\setup_inference_env.ps1
+    ```
+    *Isso cria a pasta `.venv_infer` necessária para rodar o modelo de IA.*
 
-### Por que não usar `.venv39`?
-- O `.venv39` usa `scikit-learn 1.4.x` e não é compatível com o `model.joblib` salvo na versão 1.8.0. Use o ambiente `.venv_infer` para inferência.
+2.  **Execute o Viewer**:
+    Certifique-se de estar no seu ambiente Python principal (ex: `.venv39`) e rode:
+    ```powershell
+    python -m viewer.viewer_app --data_root "C:\Caminho\Para\Seus\Dados_PROSTATEx"
+    ```
 
-## Inferência via CSV (Modo A)
-- CSV com as features na ordem definida em `inference/models/v1_prostatex/meta.json` (campo `features`).
-- Exemplo de execução:
+3.  **No Viewer**:
+    *   Use **A / K / S** para alternar as visões (Axial, Coronal, Sagittal).
+    *   **Clique** para marcar uma lesão e **Enter** para confirmar a ROI.
+    *   Pressione **E** para exportar e rodar a inferência de risco.
+    *   Os resultados aparecem na tela e são salvos em `exports/`.
 
-```powershell
-scripts\run_infer_features.ps1 -FeaturesCsv "caminho\para\features.csv" -RowIndex 0 -ModelDir "inference\models\v1_prostatex" -OutJson "pred.json"
-```
+---
 
-- Saída (`pred.json`):
-```json
-{
-  "model": "v1_prostatex",
-  "prob_pos": 0.123,
-  "thr_cv": 0.6162,
-  "pred_label": 0,
-  "features_used": { ... },
-  "timestamp": "..."
-}
-```
+## 📚 Documentação Completa
 
-## Inferência com DICOM+Mask (Modo B, opcional)
-- Requer PyRadiomics. Se não estiver instalado, use o modo CSV.
-- Execução (exemplo):
+Para detalhes técnicos profundos, arquitetura, lista completa de atalhos e guia de manutenção, consulte o documento de handoff:
 
-```powershell
-.\.venv_infer\Scripts\python -m inference.infer_cli --dicom_dir "C:\pasta\serie" --mask "C:\pasta\mask_L1.nii.gz" --model_dir "inference\models\v1_prostatex"
-```
+👉 **[Documentação Técnica e Handoff (docs/ARARAT_VIEWER_HANDOFF.md)](docs/ARARAT_VIEWER_HANDOFF.md)**
 
-## Modo Dev / Gabarito (GT) no Viewer
-- Labels reais do PROSTATEx:
-  - Coloque o CSV oficial em `data/PROSTATEx/LABELS/`, por exemplo:
-    - `ProstateX-Findings-Train.csv`
-    - `ProstateX-Findings-Test.csv`
-    - `prostatex_findings.csv`
-    - `labels.csv` / `labels.json`
-  - O viewer autodetecta o primeiro arquivo existente nessa ordem.
-- Mapeamento de cases:
-  - Para usar SAMPLES (`case1`, `case2`, ...), crie opcionalmente:
-    - `data/PROSTATEx/SAMPLES/sample_case_map.json`
-    - Exemplo:
-      - `{ "case1": "ProstateX-0222", "case2": "ProstateX-0223", "case3": "ProstateX-0256" }`
-- Uso no viewer:
-  - `G`: alterna exibição do gabarito GT no slice atual.
-  - `Shift+G`: pula para o slice da lesão GT mais próxima (usa última ROI como referência, ou primeira lesão GT).
+---
 
-## Notas de Layout MPR (anti-regressão)
-- Não usar `tight_layout` / `constrained_layout` no MPR
-- Layout MPR é fixo via `fig.add_axes` + `ax.set_position`
-- `aspect="equal"` com `adjustable="datalim"` e `ax.set_anchor("C")` preserva escala em mm
-- Debug visual somente no modo dev (toggle com tecla `D`)
+## Estrutura Resumida
+*   `viewer/`: Código da aplicação gráfica.
+*   `inference/`: Modelos e scripts de ML.
+*   `scripts/`: Utilitários de setup e validação.
+*   `exports/`: Saída de dados (ROIs, Máscaras, JSONs de predição).
+
+## Contato / Manutenção
+Este projeto foi desenvolvido com suporte do agente TRAE. Consulte o histórico de commits e a documentação em `docs/` para manter o contexto.
