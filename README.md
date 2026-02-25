@@ -15,12 +15,37 @@ Este é o repositório do MVP do Projeto ARARAT, focado na visualização e aná
     ```powershell
     python -m viewer.viewer_app --data_root "C:\Caminho\Para\Seus\Dados_PROSTATEx"
     ```
+    *Dica: Use `--series_hint t2` se suas séries T2 tiverem nomes diferentes.*
 
-3.  **No Viewer**:
-    *   Use **A / K / S** para alternar as visões (Axial, Coronal, Sagittal).
-    *   **Clique** para marcar uma lesão e **Enter** para confirmar a ROI.
-    *   Pressione **E** para exportar e rodar a inferência de risco.
-    *   Os resultados aparecem na tela e são salvos em `exports/`.
+3.  **No Viewer (Cheatsheet de Atalhos)**:
+    
+    | Categoria | Tecla | Ação |
+    | :--- | :--- | :--- |
+    | **Navegação** | `Scroll` / `Arrastar` | Zoom / Pan (Mover) |
+    | | `Setas` | Trocar Slice (Fatia) |
+    | | `A` / `K` / `S` | Visão Axial / Coronal / Sagittal |
+    | | `[ ` / ` ]` | Paginar lista de séries |
+    | | `1`..`9` | Ir para série N (atalho rápido) |
+    | | `Ctrl` + `G` | Ir para série específica (digitar número) |
+    | | `Ctrl` + `↑`/`↓` | Próximo / Anterior Paciente |
+    | | `R` | Resetar visão atual |
+    | | `Shift` + `R` | Resetar todas as visões |
+    | **ROI (Lesão)** | `Clique Esq.` | Marcar ponto (travar centro) |
+    | | `+` / `-` | Aumentar / Diminuir raio da lesão |
+    | | `Enter` | **CONFIRMAR** lesão (salva memória) |
+    | | `X` | Cancelar seleção atual |
+    | | `Del` | Apagar última lesão confirmada |
+    | **Geral** | `E` | **EXPORTAR & INFERIR** (Roda IA) |
+    | | `F` | Abrir pasta de exports no Windows |
+    | | `V` | Validar se ROIs estão dentro do volume |
+    | | `G` | Ligar/Desligar Gabarito (GT) |
+    | | `Shift` + `G` | Pular para fatia da lesão GT |
+    | | `P` | Ligar/Desligar Painel de Predições |
+    | | `H` | Mostrar/Ocultar Ajuda na tela |
+    | | `D` | Modo Debug (Layout) |
+    | | `Q` | Sair |
+
+    *Os resultados da inferência aparecem na barra lateral e são salvos em `exports/`.*
 
 ---
 

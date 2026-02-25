@@ -12,6 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Circle, Ellipse, Rectangle
+from matplotlib.widgets import Button
 import SimpleITK as sitk
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +24,7 @@ try:
     from shared import dicom_io
     from .exporters import roi_export
     from .exporters import mask_export
+    from .exporters import pdf_report
     from . import gt_labels
     from .inference_bridge import predict_for_export_folder
 except (ImportError, ValueError) as e:
@@ -190,6 +192,8 @@ class ViewerApp:
         
         # Export Info
         self.last_export_dir = None
+        self.btn_report = None
+        self.ax_btn_report = None
         
         # Logo Branding & Icon
         self.logo_img = None
@@ -722,6 +726,16 @@ class ViewerApp:
         if self.ax_info:
             self.ax_info.set_facecolor("#202020")
             self.ax_info.axis('off')
+        
+        # --- Botão Dedicado (Relatório PDF) ---
+        self.ax_btn_report = self.fig.add_axes([0.80, 0.01, 0.17, 0.04])
+        self.btn_report = Button(self.ax_btn_report, "Gerar Relatório (PDF)", 
+                                 color="#303030", hovercolor="#505050")
+        self.btn_report.label.set_color("white")
+        self.btn_report.label.set_fontweight("bold")
+        self.btn_report.label.set_fontsize(8)
+        self.btn_report.on_clicked(self.on_report_click)
+
         for ax in [self.ax_axial, self.ax_cor, self.ax_sag]:
             if ax:
                 ax.set_facecolor("black")
@@ -987,6 +1001,7 @@ class ViewerApp:
             fmt_line("G", "toggle GT (gabarito)"),
             fmt_line("Shift+G", "ir para lesao GT"),
             fmt_line("P", "toggle Painel Predicoes"),
+            fmt_line("Ctrl+P", "GERAR RELATORIO PDF"),
             fmt_line("H", "mostrar/ocultar help"),
             fmt_line("D", "toggle modo DEV"),
             fmt_line("R / Shift+R", "reset view / reset all"),
@@ -2120,6 +2135,9 @@ class ViewerApp:
                 else:
                     print("Pred panel disabled")
                 self.update_plot()
+            elif event.key == 'ctrl+p':
+                print("[KEY] Ctrl+P -> Gerar PDF")
+                self.generate_pdf_report()
             elif event.key == 'h':
                 self.show_help = not self.show_help
                 self.update_plot()
@@ -2395,6 +2413,59 @@ class ViewerApp:
         except Exception as e:
             self.last_message = f"ERRO no export: {str(e)[:20]}..."
             print(f"[ERROR] Falha no export pipeline: {e}")
+            traceback.print_exc()
+        
+        self.update_plot()
+
+    def on_report_click(self, event):
+        """Callback do botão de relatório."""
+        print("[GUI] Botao Gerar Relatorio clicado.")
+        self.generate_pdf_report()
+
+    def generate_pdf_report(self):
+        """Gera o PDF com base no último export."""
+        if not self.last_export_dir or not os.path.exists(self.last_export_dir):
+            self.last_message = "AVISO: Exporte (tecla E) antes de gerar relatorio!"
+            self.toast_message = "Exporte (E) primeiro!"
+            self.toast_until = time.time() + 4.0
+            self.update_plot()
+            return
+
+        case_name = self.cases_list[self.current_case_idx]
+        timestamp = os.path.basename(self.last_export_dir)
+        pdf_name = "ARARAT_CDS_Report.pdf"
+        output_path = os.path.join(self.last_export_dir, pdf_name)
+        
+        # Tentar obter patient_id real do GT
+        pid_real = self.gt_patient_id or case_name
+        
+        # Nome da série (tentar pegar da meta)
+        s_name = "T2 Axial"
+        if self.series_list and self.current_series_idx < len(self.series_list):
+            s = self.series_list[self.current_series_idx]
+            s_name = f"{s.get('series_name', 'T2')} ({s.get('orientation', 'AX')})"
+
+        try:
+            success = pdf_report.generate_report(
+                case_name=case_name,
+                export_dir=self.last_export_dir,
+                output_path=output_path,
+                patient_id_real=pid_real,
+                series_name=s_name
+            )
+            
+            if success:
+                self.last_message = f"PDF Gerado: {pdf_name}"
+                self.toast_message = "PDF OK! (Abrindo pasta...)"
+                self.toast_until = time.time() + 5.0
+                print(f"[INFO] Relatorio PDF salvo em: {output_path}")
+                # Abrir pasta para o usuário ver
+                self.open_last_export_dir()
+            else:
+                self.last_message = "Erro na geracao do PDF."
+        except Exception as e:
+            self.last_message = f"Erro PDF: {str(e)[:20]}"
+            print(f"[ERROR] {e}")
             traceback.print_exc()
         
         self.update_plot()

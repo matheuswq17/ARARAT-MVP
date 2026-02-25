@@ -2,7 +2,7 @@
   "app_version": "1.0.0-MVP",
   "case_id": "case1",
   "data_root": "C:\\ARARAT_MVP\\data\\PROSTATEx",
-  "export_timestamp": "2026-02-24T12:16:02.262174",
+  "export_timestamp": "2026-02-24T23:20:53.296631",
   "rois": [
     {
       "case_id": "case1",
@@ -19,7 +19,24 @@
       "id": "L1",
       "radius_mm": 5.0,
       "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7310.5101.227146260603402787665368997183",
-      "timestamp_iso": "2026-02-24T12:16:02.262174"
+      "timestamp_iso": "2026-02-24T23:20:53.296631"
+    },
+    {
+      "case_id": "case1",
+      "center_ijk": [
+        192,
+        189,
+        9
+      ],
+      "center_xyz_mm": [
+        8.851924895932271,
+        19.400361186793134,
+        -10.796934283394613
+      ],
+      "id": "L2",
+      "radius_mm": 5.0,
+      "series_instance_uid": "1.3.6.1.4.1.14519.5.2.1.7310.5101.227146260603402787665368997183",
+      "timestamp_iso": "2026-02-24T23:20:53.296631"
     }
   ]
 }
