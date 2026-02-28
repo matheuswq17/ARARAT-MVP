@@ -24,14 +24,12 @@ class InferenceConfig:
 
 
 def _find_repo_root() -> Path:
-    # assume: este arquivo está em <repo>/viewer/inference_bridge.py
     return Path(__file__).resolve().parents[1]
 
 
 def load_config() -> InferenceConfig:
     repo = _find_repo_root()
 
-    # prioridade: config_local.json pode sobrescrever caminhos (opcional)
     cfg_path = repo / "config_local.json"
     infer_py = repo / ".venv_infer" / "Scripts" / "python.exe"
     model_dir = repo / "inference" / "models" / "v1_prostatex"
@@ -102,7 +100,6 @@ def extract_radiomics_features(dicom_dir: Path, mask_path: Path, params_yaml: Pa
     for k, v in result.items():
         if str(k).startswith("diagnostics_"):
             continue
-        # tenta converter pra float quando possível
         try:
             if hasattr(v, "item"):
                 v = v.item()

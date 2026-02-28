@@ -65,7 +65,6 @@ class ViewerApp:
             pass
 
     def __init__(self, dicom_dir=None, data_root=None, series_hint="t2tsetra"):
-        # Carregar config se argumentos forem vazios
         config = self._load_config()
         if not data_root and not dicom_dir and "data_root" in config:
             data_root = config["data_root"]
@@ -76,10 +75,8 @@ class ViewerApp:
         self.input_root = os.path.abspath(data_root) if data_root else (os.path.abspath(dicom_dir) if dicom_dir else None)
         self.dicom_root = self.input_root
         self.series_hint = series_hint
-        
-        # Salvar se definimos um novo root (e ele existe)
+
         if self.input_root and os.path.exists(self.input_root):
-            # Se samples_root não veio da config, tenta inferir
             if not self.samples_root:
                 self.discover_workspace()
             self._save_config()
@@ -89,11 +86,11 @@ class ViewerApp:
         self._cache_order = []
         self._max_cache_size = 6
 
-        # Dados do Workspace (Cases)
+        # Dados do workspace (Cases)
         self.cases_list = []
         self.current_case_idx = -1
         self.is_samples_mode = False
-        self.patient_select_mode = False # Novo modo de navegação
+        self.patient_select_mode = False # novo modo de navegacao
         
         # Dados do Case Atual
         self.series_list = []
@@ -150,16 +147,14 @@ class ViewerApp:
         self.candidate_center = None # (i, j, k) - None se seguindo mouse
         self.mouse_pos = (0, 0) # (i, j) atual do mouse
         self.radius_mm = 5.0
-        self.is_locked = False # Se o clique travou o centro
-        
-        # Modos e Seleção
-        self.mode = "NORMAL" # "NORMAL", "SERIES_SELECT", "CASE_SELECT"
+        self.is_locked = False
+
+        self.mode = "NORMAL"
         self.series_input_str = ""
         self.case_input_str = ""
-        
-        # Performance (Blitting)
+
         self.background = None
-        self.preview_artists = [] # Mantido por compatibilidade temporaria se necessário
+        self.preview_artists = []
         self._persistent_artists = {
             'line': None,
             'ellipse': None,
@@ -190,13 +185,11 @@ class ViewerApp:
         self.ax_info = None
         self.ax_sidebar = None
         self.ax = None
-        
-        # Export Info
+
         self.last_export_dir = None
         self.btn_report = None
         self.ax_btn_report = None
-        
-        # Logo Branding & Icon
+
         self.logo_img = None
         assets_dir = os.path.join(current_dir, "assets")
         logo_path = os.path.join(assets_dir, "ararat_logo.png")
@@ -205,7 +198,6 @@ class ViewerApp:
         if os.path.exists(logo_path):
             try:
                 self.logo_img = mpimg.imread(logo_path)
-                # Gerar .ico se não existir
                 if not os.path.exists(self.ico_path):
                     img = Image.open(logo_path)
                     img.save(self.ico_path, format='ICO', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])
@@ -215,12 +207,10 @@ class ViewerApp:
         else:
             print(f"[WARNING] Logo nao encontrada em {logo_path}")
 
-        # Garantir pastas de export
         self.export_dir = os.path.join(project_root, "exports")
         self.roi_img_dir = os.path.join(self.export_dir, "roi_images")
         os.makedirs(self.roi_img_dir, exist_ok=True)
-        
-        # Inicialização
+
         self.discover_workspace()
         if self.is_samples_mode:
             self.load_case(0)
@@ -247,7 +237,7 @@ class ViewerApp:
             self.is_samples_mode = True
         else:
             # Caso B: Selecionou a própria pasta SAMPLES (contém subpastas case*/patient*)
-            # Verificamos se há subpastas que contêm DICOMs
+            # Verificamos se há subpastas que contêm DICOM
             try:
                 subdirs = sorted([d for d in os.listdir(self.input_root) 
                                  if os.path.isdir(os.path.join(self.input_root, d))])
@@ -263,7 +253,7 @@ class ViewerApp:
             if has_valid_subdirs:
                 print(f"[INFO] Pasta SAMPLES detectada: {self.input_root}")
                 self.samples_root = self.input_root
-                self.input_root = os.path.dirname(self.samples_root) # Ajustar data_root para o pai
+                self.input_root = os.path.dirname(self.samples_root)
                 self.is_samples_mode = True
             else:
                 # Caso C: Tentar ver se é um caso único direto
@@ -281,7 +271,6 @@ class ViewerApp:
                     self.is_samples_mode = False
                     return
 
-        # Se chegamos aqui, estamos em SAMPLES mode
         if self.is_samples_mode:
             self.discover_patients()
 
@@ -304,12 +293,9 @@ class ViewerApp:
         if valid_cases:
             print(f"[INFO] {len(valid_cases)} casos encontrados em {self.samples_root}")
             self.cases_list = valid_cases
-            # Se já tivermos um caso carregado que está na lista, manter o índice
-            # Caso contrário, resetar para o primeiro
             if self.current_case_idx < 0 or self.current_case_idx >= len(self.cases_list):
                 self.current_case_idx = 0
             
-            # Garantir que dicom_root reflete o caso atual
             self.dicom_root = os.path.join(self.samples_root, self.cases_list[self.current_case_idx])
         else:
             self.last_message = "Nenhum caso com DICOM encontrado na pasta selecionada."
@@ -344,8 +330,6 @@ class ViewerApp:
             
         try:
             roi_export.save_roi_json(output_path, case_name, self.rois, self.input_root)
-            # Nota: HUD message opcional para não poluir muito, 
-            # mas o requisito pede "ROI confirmada (autosave OK)"
         except Exception as e:
             print(f"[ERROR] Falha no autosave: {e}")
 
@@ -358,24 +342,20 @@ class ViewerApp:
                     data = json.load(f)
                     
                 loaded_rois = []
-                # Converter formato do JSON exportado de volta para o formato interno
                 for r in data.get("rois", []):
-                    # Tentar extrair k do slice_index_k se existir, senão usa voxel[2]
-                    # Note: roi_export simplificado pode não ter todos os campos
                     center_mm = r.get("center_xyz_mm")
                     if not center_mm: continue
                     
-                    # Precisamos dos center_voxel. Como não temos a geometria aqui facilmente sem a série,
-                    # o ideal é que o rois_latest.json tenha o center_voxel original.
-                    # Mas o roi_export.py atual só salva center_xyz_mm.
-                    # VAMOS MELHORAR O roi_export ou salvar o center_voxel aqui.
+                    # Precisamos dos center_voxel. Como não temos a geometria aqui facilmente sem a série
+                    # o ideal é que o rois_latest.json tenha o center_voxel original
+                    # Mas o roi_export.py atual só salva center_xyz_mm
+                    # VAMOS MELHORAR O roi_export ou salvar o center_voxel aqui
                     
                     roi = {
                         "id": r.get("id", f"L{len(loaded_rois)+1}"),
                         "center_mm": center_mm,
                         "radius_mm": r.get("radius_mm", 5.0),
                         "series_uid": r.get("series_instance_uid", "UNKNOWN"),
-                        # Placeholder para center_voxel, será recalculado no load_current_series
                         "center_voxel": r.get("center_ijk", [0, 0, 0]) 
                     }
                     loaded_rois.append(roi)
@@ -401,28 +381,22 @@ class ViewerApp:
             
         new_case_name = self.cases_list[case_idx]
         print(f"\n[HOT-SWAP] Trocando para caso: {new_case_name}")
-        
-        # Alerta se houver ROIs não exportadas
+
         if self.rois:
             self.last_message = "Aviso: ROIs nao exportadas. Pressione E para exportar."
-        
-        # Atualizar dicom_root
+
         if self.is_samples_mode:
             self.dicom_root = os.path.join(self.samples_root, new_case_name)
         
         self.current_case_idx = case_idx
-        
-        # Reset de Estado Robusto
+
         self.series_list = []
         self.current_series_idx = 0
         self.series_page = 0
         self.current_slice = 0
         
-        # Gerenciar ROIs por paciente
-        # Se já estiver no dict rois_by_patient, carregar de lá
         if new_case_name in self.rois_by_patient:
             self.rois = self.rois_by_patient[new_case_name]
-            # Atualizar lesion_counter
             if self.rois:
                 try:
                     last_num = int(self.rois[-1]['id'][1:])
@@ -432,7 +406,6 @@ class ViewerApp:
             else:
                 self.lesion_counter = 1
         else:
-            # Tentar carregar do disco (autosave)
             if self._autoload_rois(new_case_name):
                 self.rois = self.rois_by_patient[new_case_name]
             else:
@@ -448,12 +421,10 @@ class ViewerApp:
         self.last_message = f"Caso {new_case_name} carregado."
         self.show_gt = False
         self.gt_lesions = []
-        
-        # Recarregar séries do novo caso
+
         self.discover_series()
         self.load_current_series()
-        
-        # Se UI já existir, atualizar
+
         if self.fig:
             self.update_plot()
         return True
@@ -490,18 +461,14 @@ class ViewerApp:
         if not self.series_list:
             print(f"\n[AVISO] Nenhuma serie DICOM valida encontrada em {self.dicom_root}")
             return
-        
-        # Reset T2 quick
+
         self.t2_quick = {'axial': None, 'coronal': None, 'sagittal': None}
         
         print("\n[DEBUG] Analisando candidatos T2 QUICK:")
-        
-        # Detectar Tri-planar T2
-        # Critério: t2 + orientação + maior num_slices (se houver empate)
+
         for orient in ['axial', 'coronal', 'sagittal']:
             candidates = []
             for idx, s in enumerate(self.series_list):
-                # Imprimir info de cada série candidata T2
                 if s['is_t2']:
                     print(f"  - Serie: {s['series_name']} | Orient: {s['orientation']} | Slices: {s['num_slices']}")
                 
@@ -509,19 +476,16 @@ class ViewerApp:
                     candidates.append((idx, s))
             
             if candidates:
-                # Escolher a que tem mais slices (mais provável ser a principal)
                 best_idx = max(candidates, key=lambda x: x[1]['num_slices'])[0]
                 self.t2_quick[orient] = best_idx
                 print(f"  => [VITORIA] T2 {orient.upper()} detectada: {self.series_list[best_idx]['series_name']}")
             else:
                 print(f"  => [AVISO] T2 {orient.upper()} nao encontrada")
 
-        # Escolher serie default (Axial T2)
         if self.t2_quick['axial'] is not None:
             self.current_series_idx = self.t2_quick['axial']
             return
-            
-        # Fallback: Serie com mais slices
+
         self.current_series_idx = self.series_list.index(max(self.series_list, key=lambda x: x['num_slices']))
 
     def validate_rois_for_current_series(self):
@@ -537,24 +501,20 @@ class ViewerApp:
             lid = roi['id']
             rmm = roi['radius_mm']
             
-            # Converter centro do mundo para voxel na série atual
+            # converte centro do mundo para voxel na serie atual
             vi, vj, vk = dicom_io.mm_to_voxel(roi['center_mm'][0], 
                                             roi['center_mm'][1], 
                                             roi['center_mm'][2], 
                                             self.meta)
             
-            # Limites do volume
             sz_k, sz_j, sz_i = self.np_vol.shape
-            
-            # Check centro
+
             is_center_in = (0 <= vi < sz_i and 0 <= vj < sz_j and 0 <= vk < sz_k)
             
             if not is_center_in:
                 status = "OUT"
                 out_list.append(lid)
             else:
-                # Check parcial (bounding box simplificada em voxel)
-                # Converter raio mm para voxels (aproximado por eixo)
                 ri = rmm / self.meta['spacing'][0]
                 rj = rmm / self.meta['spacing'][1]
                 rk = rmm / self.meta['spacing'][2]
@@ -569,8 +529,7 @@ class ViewerApp:
             new_status[lid] = status
             
         self.roi_status = new_status
-        
-        # Atualizar mensagem se houver OUT
+
         if out_list:
             self.last_message = f"Atencao: ROIs fora do volume: {', '.join(out_list)}"
         
@@ -591,11 +550,9 @@ class ViewerApp:
         s_idx = self.current_series_idx
         cache_key = (case_name, s_idx)
 
-        # 1. Tentar Cache
         if cache_key in self._series_cache:
             print(f"[DEBUG] Cache HIT: {cache_key}")
             self.sitk_img, self.np_vol, self.meta = self._series_cache[cache_key]
-            # Atualizar ordem do LRU
             self._cache_order.remove(cache_key)
             self._cache_order.append(cache_key)
             self.last_message = f"Pronto (cache)"
@@ -629,17 +586,13 @@ class ViewerApp:
 
         self.max_slice = self.np_vol.shape[0] - 1
         self._prepare_display_volume()
-        
-        # Validar ROIs para esta série
+
         self.validate_rois_for_current_series()
-        
-        # Atualizar center_voxel das ROIs para a geometria da série atual
-        # Isso garante que a renderização (desenho dos círculos) seja precisa
+
         for roi in self.rois:
             v = dicom_io.mm_to_voxel(roi['center_mm'][0], roi['center_mm'][1], roi['center_mm'][2], self.meta)
             roi['center_voxel'] = [int(round(v[0])), int(round(v[1])), int(round(v[2]))]
-        
-        # Posicionamento do centro
+
         sz_k, sz_j, sz_i = self.np_vol.shape
         if center_mm:
             vi, vj, vk = dicom_io.mm_to_voxel(center_mm[0], center_mm[1], center_mm[2], self.meta)
@@ -702,7 +655,7 @@ class ViewerApp:
         self._set_center_voxel(i, j, k)
 
     def run(self):
-        # Desativar hotkeys padrão do matplotlib que podem causar conflitos
+        # desativa hotkeys do matplotlib
         plt.rcParams['keymap.save'] = ''
         plt.rcParams['keymap.fullscreen'] = ''
         plt.rcParams['keymap.home'] = ''
@@ -728,7 +681,7 @@ class ViewerApp:
             self.ax_info.set_facecolor("#202020")
             self.ax_info.axis('off')
         
-        # --- Botão Dedicado (Relatório PDF) ---
+        # botao relatorio pdf
         self.ax_btn_report = self.fig.add_axes([0.80, 0.01, 0.17, 0.04])
         self.btn_report = Button(self.ax_btn_report, "Gerar Relatório (PDF)", 
                                  color="#303030", hovercolor="#505050")
@@ -741,18 +694,14 @@ class ViewerApp:
             if ax:
                 ax.set_facecolor("black")
 
-        # Desativar toolbar para evitar pan/zoom acidental
         self.fig.canvas.toolbar.pack_forget()
 
         self.fig.canvas.manager.set_window_title("ARARAT Viewer")
-        
-        # Definir icone da janela (se o ico existir)
+
         if os.path.exists(self.ico_path):
             try:
-                # No Windows, tentamos usar o método do manager para definir o ícone
                 manager = self.fig.canvas.manager
                 if hasattr(manager, 'window'):
-                    # Dependendo do backend (TkAgg é o padrão no Windows)
                     try:
                         manager.window.iconbitmap(self.ico_path)
                     except:
@@ -764,8 +713,7 @@ class ViewerApp:
 
         self._apply_slots()
         self.update_plot()
-        
-        # conectar eventos
+
         self.fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         self.fig.canvas.mpl_connect('button_release_event', self.on_button_release)
@@ -800,10 +748,9 @@ class ViewerApp:
         if self.background is None or self.ax is None or self.meta is None:
             return
 
-        # Restaurar background
         self.fig.canvas.restore_region(self.background)
 
-        # Determinar posição e parâmetros
+        # determina posição e parâmetros
         if self.is_locked and self.candidate_center:
             ci, cj, ck = self.candidate_center
             color = 'red'
@@ -816,14 +763,14 @@ class ViewerApp:
             linestyle = ':'
             alpha = 0.5
 
-        # Calcular interseção da esfera
+        # calcula interseção da esfera
         p_center = dicom_io.voxel_to_mm(ci, cj, ck, self.meta)
         p_here = dicom_io.voxel_to_mm(ci, cj, self.current_slice, self.meta)
         dz_mm = abs(p_here[2] - p_center[2])
         
         show_roi = dz_mm < self.radius_mm
 
-        # 1. Gerenciar Crosshair (Line2D)
+        # gerenciar crosshair
         if self._persistent_artists['line'] is None:
             line, = self.ax.plot([ci], [cj], marker='+', color=color, markersize=10, 
                                animated=True, visible=False)
@@ -838,7 +785,7 @@ class ViewerApp:
         else:
             line.set_visible(False)
 
-        # 2. Gerenciar Elipse (Patch)
+        # gerencia elipse
         if self._persistent_artists['ellipse'] is None:
             ellipse = Ellipse((ci, cj), width=1, height=1, fill=False, color=color, 
                              linewidth=2, animated=True, visible=False)
@@ -1983,19 +1930,17 @@ class ViewerApp:
                 self._jump_to_gt_slice()
                 return
 
-            # Modo Go-to Series (Ctrl+G)
             if self.mode == "NORMAL" and event.key == 'ctrl+g':
                 self.mode = "SERIES_SELECT"
                 self.series_input_str = ""
                 self.update_plot()
                 return
 
-            # Modo Abrir Pasta (O)
             if self.mode == "NORMAL" and event.key == 'o':
                 self.open_data_root()
                 return
 
-            # Modo de Seleção de Caso (Captura de Teclas)
+            # Seleção de Caso
             if self.mode == "CASE_SELECT":
                  if event.key == 'enter':
                      try:
@@ -2023,7 +1968,6 @@ class ViewerApp:
                      self.update_plot()
                  return
 
-             # Modo de Seleção de Série (Captura de Teclas)
             if self.mode == "SERIES_SELECT":
                 if event.key == 'enter':
                     try:
@@ -2056,7 +2000,7 @@ class ViewerApp:
                     self.update_plot()
                 return
 
-            # Controles Normais (Modo NORMAL)
+            # MODO NORMAL
             elif event.key == 'c':
                 self.mode = "CASE_SELECT"
                 self.case_input_str = ""
@@ -2167,8 +2111,7 @@ class ViewerApp:
         else:
             removed = self.rois.pop()
             self.last_message = f"ROI removida: {removed['id']}"
-            
-            # Atualizar memória e autosave
+
             case_name = self.cases_list[self.current_case_idx]
             self.rois_by_patient[case_name] = self.rois
             self._autosave_rois()
@@ -2176,7 +2119,7 @@ class ViewerApp:
             if not self.rois:
                 self.lesion_counter = 1
             else:
-                # Extrair numero do id "L3" -> 3
+                # eextrair numero do id L3  3
                 try:
                     last_id = int(self.rois[-1]['id'][1:])
                     self.lesion_counter = last_id + 1
@@ -2193,7 +2136,6 @@ class ViewerApp:
         i, j, k = self.candidate_center
         s = self.series_list[self.current_series_idx]
         
-        # converter para MM
         x, y, z = dicom_io.voxel_to_mm(i, j, k, self.meta)
         
         roi = {
@@ -2207,12 +2149,10 @@ class ViewerApp:
         self.rois.append(roi)
         self.last_message = f"ROI L{self.lesion_counter} confirmada! (autosave OK)"
         
-        # Atualizar memória e autosave
         case_name = self.cases_list[self.current_case_idx]
         self.rois_by_patient[case_name] = self.rois
         self._autosave_rois()
-        
-        # Exportar PNG e CSV
+
         self._export_roi_assets(roi)
         
         self.lesion_counter += 1
@@ -2226,24 +2166,14 @@ class ViewerApp:
         s = self.series_list[self.current_series_idx]
         plane = s['orientation']
         
-        # 1. Salvar PNG
-        # Vamos usar o canvas atual para capturar a imagem com as ROIs desenhadas
-        # mas apenas do eixo principal.
-        # Para garantir qualidade, vamos salvar o slice atual separadamente se necessário, 
-        # mas o requisito pede "imagem do slice atual com a ROI desenhada".
-        
         roi_id = roi['id']
         png_filename = f"case{case_name}_series{self.current_series_idx}_{plane}_slice{self.current_slice}_roi{roi_id}.png"
         png_path = os.path.join(self.roi_img_dir, png_filename)
         
         try:
-            # Criar uma figura temporária para o export sem o HUD/Painel
             fig_tmp, ax_tmp = plt.subplots(figsize=(8, 8))
             ax_tmp.imshow(self.np_vol[self.current_slice, :, :], cmap='gray')
             
-            # Desenhar a ROI confirmada (e outras se houver)
-            # Para o export, vamos focar na ROI atual em destaque (vermelha ou verde)
-            # Mas o requisito diz "com a ROI desenhada". Vamos desenhar a atual.
             ci, cj, ck = roi['center_voxel']
             r_mm = roi['radius_mm']
             
@@ -2273,7 +2203,6 @@ class ViewerApp:
         except Exception as e:
             print(f"[ERROR] Falha ao exportar PNG: {e}")
 
-        # 2. Atualizar CSV Manifest
         manifest_path = os.path.join(self.export_dir, "roi_manifest.csv")
         file_exists = os.path.isfile(manifest_path)
         
@@ -2308,10 +2237,10 @@ class ViewerApp:
         try:
             if sys.platform == 'win32':
                 os.startfile(self.last_export_dir)
-            elif sys.platform == 'darwin': # macOS
+            elif sys.platform == 'darwin':
                 import subprocess
                 subprocess.Popen(['open', self.last_export_dir])
-            else: # linux
+            else:
                 import subprocess
                 subprocess.Popen(['xdg-open', self.last_export_dir])
             self.last_message = "Abrindo pasta de export..."
@@ -2332,17 +2261,14 @@ class ViewerApp:
             if new_root:
                 old_root = self.input_root
                 self.input_root = os.path.abspath(new_root)
-                # Resetar samples_root para forçar redescobrir se o usuário mudou de pasta
                 self.samples_root = None 
                 self.discover_workspace()
                 
                 if self.cases_list:
-                    # Sucesso: Salvar e carregar primeiro caso
                     self._save_config()
                     self.load_case(0)
                     self.last_message = f"Raiz configurada: {len(self.cases_list)} pacientes."
                 else:
-                    # Falha: Reverter e avisar (discover_workspace já setou last_message)
                     self.input_root = old_root
                     self.discover_workspace()
                 
@@ -2365,18 +2291,15 @@ class ViewerApp:
         os.makedirs(export_case_dir, exist_ok=True)
 
         try:
-            # 1. Exportar JSON
             json_path = os.path.join(export_case_dir, "rois.json")
             roi_export.save_roi_json(json_path, case_name, self.rois, self.input_root)
             
-            # 2. Exportar Máscaras NIfTI
             mask_export.export_roi_masks(export_case_dir, self.sitk_img, self.rois, case_name)
             
             self.last_message = f"Export OK: {case_name}/{timestamp}"
             self.last_export_dir = export_case_dir
             print(f"\n[INFO] Export Pipeline completo em: {export_case_dir}")
-            
-            # Inferência imediata usando ponte (features CSV + venv_infer)
+
             try:
                 dicom_dir = Path(self.meta['series_dir']) if (self.meta and 'series_dir' in self.meta) else Path(self.dicom_root or '')
                 export_dir = Path(self.last_export_dir)
@@ -2437,10 +2360,8 @@ class ViewerApp:
         pdf_name = "ARARAT_CDS_Report.pdf"
         output_path = os.path.join(self.last_export_dir, pdf_name)
         
-        # Tentar obter patient_id real do GT
         pid_real = self.gt_patient_id or case_name
         
-        # Nome da série (tentar pegar da meta)
         s_name = "T2 Axial"
         if self.series_list and self.current_series_idx < len(self.series_list):
             s = self.series_list[self.current_series_idx]
@@ -2460,7 +2381,6 @@ class ViewerApp:
                 self.toast_message = "PDF OK! (Abrindo pasta...)"
                 self.toast_until = time.time() + 5.0
                 print(f"[INFO] Relatorio PDF salvo em: {output_path}")
-                # Abrir pasta para o usuário ver
                 self.open_last_export_dir()
             else:
                 self.last_message = "Erro na geracao do PDF."
@@ -2485,18 +2405,12 @@ class ViewerApp:
             radius_mm = roi['radius_mm']
             roi_id = roi['id']
             
-            # Converter centro para voxel na imagem atual
             try:
-                # Usar SimpleITK para transformar ponto físico em índice
-                # Se estiver fora do bounding box físico, lança exceção ou retorna valores fora
                 continuous_idx = self.sitk_img.TransformPhysicalPointToContinuousIndex(center_mm)
                 size = self.sitk_img.GetSize() # (x, y, z)
                 
-                # Checar se o centro está dentro ou perto o suficiente para a esfera intersectar
                 is_outside = False
                 for i in range(3):
-                    # Se o centro estiver mais longe que o raio das bordas do volume
-                    # Simplificação: checar se o centro está nos limites [0, size]
                     if continuous_idx[i] < -0.5 or continuous_idx[i] > size[i] - 0.5:
                         is_outside = True
                         break
@@ -2524,19 +2438,13 @@ class ViewerApp:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         filename = f"roi_selection_{case_name}_{timestamp}.json"
         
-        # Garantir diretório de export
         os.makedirs(self.export_dir, exist_ok=True)
         output_path = os.path.join(self.export_dir, filename)
         
-        # Montar estrutura completa solicitada
+
         rois_data = []
         for roi in self.rois:
-            # Encontrar série da ROI se possível (no momento o viewer assume a série atual para as ROIs mostradas)
-            # Mas vamos pegar os dados salvos no objeto ROI
             s_uid = roi.get('series_uid')
-            
-            # Encontrar metadados da série (se não for a atual, teríamos que carregar, mas para o MVP
-            # vamos assumir que as ROIs confirmadas têm os dados geométricos já calculados)
             
             roi_entry = {
                 "id": roi['id'],
@@ -2556,7 +2464,6 @@ class ViewerApp:
                 }
             }
             
-            # Tentar achar a orientação na lista de séries
             for s in self.series_list:
                 if s['series_uid'] == s_uid:
                     roi_entry["orientation"] = s['orientation'].upper()
