@@ -1,0 +1,19 @@
+imageType:
+  Original: {}
+
+featureClass:
+  firstorder: []
+  shape: []
+  glszm: []
+  gldm: []
+
+setting:
+  label: 1
+  binWidth: 25
+  normalize: false
+  correctMask: true
+  preCrop: false
+  minimumROIDimensions: 1
+  minimumROISize: 1
+  interpolator: sitkBSpline
+  additionalInfo: true

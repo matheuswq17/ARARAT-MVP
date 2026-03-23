@@ -1,0 +1,5 @@
+{
+  "bins": [0.30, 0.60],
+  "labels": ["Baixo", "Intermediário", "Alto"],
+  "note": "bins definidas a partir de validação OOF"
+}

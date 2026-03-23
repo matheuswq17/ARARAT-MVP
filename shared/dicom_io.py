@@ -1,0 +1,224 @@
+import sys
+import os
+import numpy as np
+
+try:
+    import SimpleITK as sitk
+except ImportError:
+    sys.stderr.write("\nERRO CRITICO: SimpleITK nao encontrado.\n")
+    sys.stderr.write("Por favor, instale usando: pip install SimpleITK\n\n")
+    sys.exit(1)
+
+def resolve_series_dir(root_dir, series_hint="t2tsetra"):
+    """
+    Localiza a melhor pasta de serie DICOM dentro de root_dir.
+    
+    A) Se root_dir ja contem uma serie DICOM valida, usa ela.
+    B) Caso contrario, busca pastas cujo nome contem series_hint (case-insensitive).
+       Escolhe a que tiver mais arquivos DICOM.
+    C) Fallback: primeira pasta com DICOM encontrada.
+    
+    Returns:
+        tuple: (series_dir, series_id, n_files)
+    """
+    reader = sitk.ImageSeriesReader()
+    
+    def get_valid_series(d):
+        try:
+            ids = reader.GetGDCMSeriesIDs(d)
+            if ids:
+                sid = ids[0]
+                files = reader.GetGDCMSeriesFileNames(d, sid)
+                return sid, len(files)
+        except:
+            pass
+        return None, 0
+
+    # caso a:
+    sid, n_files = get_valid_series(root_dir)
+    if sid:
+        return root_dir, sid, n_files
+
+    # caso b:
+    candidates = []
+    for root, dirs, files in os.walk(root_dir):
+        for d in dirs:
+            if series_hint.lower() in d.lower():
+                full_path = os.path.join(root, d)
+                sid, n_files = get_valid_series(full_path)
+                if sid:
+                    candidates.append((full_path, sid, n_files))
+    
+    if candidates:
+        best = max(candidates, key=lambda x: x[2])
+        return best
+
+    # caso c:
+    print(f"[AVISO] Nenhuma serie contendo '{series_hint}' encontrada. Buscando qualquer serie DICOM...")
+    for root, dirs, files in os.walk(root_dir):
+        sid, n_files = get_valid_series(root)
+        if sid:
+            print(f"[AVISO] Usando serie encontrada em: {root}")
+            return root, sid, n_files
+            
+    raise ValueError(f"Nenhuma serie DICOM valida encontrada em {root_dir}")
+
+def list_case_series(root_dir):
+    """
+    Varre recursivamente root_dir e retorna uma lista de series DICOM validas.
+    
+    Returns:
+        list: [ {series_dir, series_uid, series_name, num_slices, orientation, is_t2}, ... ]
+    """
+    reader = sitk.ImageSeriesReader()
+    series_list = []
+
+    for root, dirs, files in os.walk(root_dir):
+        if not files:
+            continue
+            
+        try:
+            uids = reader.GetGDCMSeriesIDs(root)
+            for uid in uids:
+                dicom_names = reader.GetGDCMSeriesFileNames(root, uid)
+                if not dicom_names:
+                    continue
+
+                first_reader = sitk.ImageFileReader()
+                first_reader.SetFileName(dicom_names[0])
+                first_reader.ReadImageInformation()
+                
+                direction = first_reader.GetDirection()
+                # heuristica de orientacao baseada na direction matrix (LPS)
+                # direction e (x1, x2, x3, y1, y2, y3, z1, z2, z3)
+                # normal do plano e o cross product dos eixos x e y da imagem
+                x_dir = np.array(direction[0:3])
+                y_dir = np.array(direction[3:6])
+                z_dir = np.cross(x_dir, y_dir)
+                
+                # abs para simplificar comparacao com eixos principais
+                z_abs = np.abs(z_dir)
+                max_idx = np.argmax(z_abs)
+                
+                orientation = "unknown"
+                if max_idx == 2: # z-axis predominante na normal -> axial
+                    orientation = "axial"
+                elif max_idx == 1: # y-axis predominante na normal -> coronal
+                    orientation = "coronal"
+                elif max_idx == 0: # x-axis predominante na normal -> sagittal
+                    orientation = "sagittal"
+                
+                folder_name = os.path.basename(root)
+
+                if "t2tsetra" in folder_name.lower(): orientation = "axial"
+                elif "t2tsecor" in folder_name.lower(): orientation = "coronal"
+                elif "t2tsesag" in folder_name.lower(): orientation = "sagittal"
+                
+                is_t2 = "t2" in folder_name.lower() or "t2" in uid.lower()
+                
+                # debug
+                print(f"[DEBUG] Series: {folder_name} | Orientation: {orientation} | Dir: {direction[:6]} | Normal: {z_dir}")
+                
+                series_list.append({
+                    "series_dir": root,
+                    "series_uid": uid,
+                    "series_name": folder_name,
+                    "num_slices": len(dicom_names),
+                    "orientation": orientation,
+                    "is_t2": is_t2
+                })
+        except:
+            continue
+            
+    return series_list
+
+def load_dicom_series_by_path(series_dir, series_id):
+    """
+    Carrega uma serie DICOM dado o diretorio e o ID.
+    """
+    reader = sitk.ImageSeriesReader()
+    dicom_names = reader.GetGDCMSeriesFileNames(series_dir, series_id)
+    reader.SetFileNames(dicom_names)
+    
+    sitk_img = reader.Execute()
+    np_vol = sitk.GetArrayFromImage(sitk_img)
+    
+    meta_dict = {
+        "origin": sitk_img.GetOrigin(),
+        "spacing": sitk_img.GetSpacing(),
+        "direction": sitk_img.GetDirection(),
+        "size": sitk_img.GetSize(),
+        "series_dir": series_dir,
+        "series_id": series_id,
+        "n_files": len(dicom_names)
+    }
+    
+    return sitk_img, np_vol, meta_dict
+
+def load_dicom_series(root_dir, series_hint="t2tsetra"):
+    """
+    Carrega uma serie DICOM resolvendo o diretorio automaticamente.
+    
+    Returns:
+        tuple: (sitk_img, np_vol, meta_dict)
+    """
+    series_dir, series_id, n_files = resolve_series_dir(root_dir, series_hint)
+    
+    reader = sitk.ImageSeriesReader()
+    dicom_names = reader.GetGDCMSeriesFileNames(series_dir, series_id)
+    reader.SetFileNames(dicom_names)
+    
+    sitk_img = reader.Execute()
+    np_vol = sitk.GetArrayFromImage(sitk_img)
+    
+    meta_dict = {
+        "origin": sitk_img.GetOrigin(),
+        "spacing": sitk_img.GetSpacing(),
+        "direction": sitk_img.GetDirection(),
+        "size": sitk_img.GetSize(),
+        "series_dir": series_dir,
+        "series_id": series_id,
+        "n_files": n_files
+    }
+    
+    return sitk_img, np_vol, meta_dict
+
+def voxel_to_mm(i, j, k, meta):
+    """
+    Converte voxel (i, j, k) -> mm (x, y, z)
+    """
+    origin = meta["origin"]
+    spacing = meta["spacing"]
+    direction = meta["direction"]
+    
+    vx = i * spacing[0]
+    vy = j * spacing[1]
+    vz = k * spacing[2]
+    
+    dx = direction[0]*vx + direction[1]*vy + direction[2]*vz
+    dy = direction[3]*vx + direction[4]*vy + direction[5]*vz
+    dz = direction[6]*vx + direction[7]*vy + direction[8]*vz
+    
+    return (origin[0] + dx, origin[1] + dy, origin[2] + dz)
+
+def mm_to_voxel(x, y, z, meta):
+    """
+    Converte mm (x, y, z) -> voxel (i, j, k)
+    """
+    origin = meta["origin"]
+    spacing = meta["spacing"]
+    direction = meta["direction"]
+    
+    px = x - origin[0]
+    py = y - origin[1]
+    pz = z - origin[2]
+    
+    rx = direction[0]*px + direction[3]*py + direction[6]*pz
+    ry = direction[1]*px + direction[4]*py + direction[7]*pz
+    rz = direction[2]*px + direction[5]*py + direction[8]*pz
+    
+    i = int(round(rx / spacing[0]))
+    j = int(round(ry / spacing[1]))
+    k = int(round(rz / spacing[2]))
+    
+    return (i, j, k)
